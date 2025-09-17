@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Linq;
 using Common.Logging;
@@ -11,7 +11,7 @@ using Contour.Serialization;
 using Contour.Transport.RabbitMQ;
 using Contour.Transport.RabbitMQ.Internal;
 using Contour.Validation;
- 
+
 namespace Contour.Configuration
 {
     /// <summary>
@@ -60,6 +60,10 @@ namespace Contour.Configuration
 
             this.SenderDefaults = new SenderOptions(this.EndpointOptions);
             this.ReceiverDefaults = new ReceiverOptions(this.EndpointOptions);
+
+            // Register W3C trace context filter by default for OpenTelemetry support
+            // TODO: remove and make it be enabled from config
+            this.filters.Add(new W3CTraceContextFilter());
         }
 
         /// <summary>

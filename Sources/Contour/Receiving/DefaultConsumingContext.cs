@@ -1,6 +1,9 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Text;
 using System.Threading.Tasks;
+using Contour.Helpers;
+using Contour.Tracing; // Add this using statement
 
 namespace Contour.Receiving
 {
@@ -25,9 +28,9 @@ namespace Contour.Receiving
         /// </param>
         public DefaultConsumingContext(IBusContext busContext, Message<T> message, IDelivery delivery)
         {
-            this.Message = message;
-            this.Delivery = delivery;
-            this.Bus = busContext;
+            Message = message;
+            Delivery = delivery;
+            Bus = busContext;
         }
 
         /// <summary>
@@ -48,14 +51,14 @@ namespace Contour.Receiving
         /// <summary>
         /// Верно, если можно ответить на это сообщение.
         /// </summary>
-        public bool CanReply => this.Delivery.CanReply;
+        public bool CanReply => Delivery.CanReply;
 
         /// <summary>
         /// Помечает сообщение как обработанное.
         /// </summary>
         public void Accept()
         {
-            this.Delivery.Accept();
+            Delivery.Accept();
         }
 
         /// <summary>
@@ -64,7 +67,7 @@ namespace Contour.Receiving
         /// <param name="label">Новая метка, с которой пересылается сообщение.</param>
         public void Forward(MessageLabel label)
         {
-            this.Forward(label, this.Message.Payload);
+            Forward(label, Message.Payload);
         }
 
         /// <summary>
@@ -74,17 +77,17 @@ namespace Contour.Receiving
         [Obsolete("Используйте ForwardAsync")]
         public void Forward(string label)
         {
-            this.Forward(label, this.Message.Payload);
+            Forward(label, Message.Payload);
         }
 
         public async Task ForwardAsync(string label)
         {
-            await this.Delivery.Forward(label.ToMessageLabel(), this.Message.Payload);
+            await Delivery.Forward(label.ToMessageLabel(), Message.Payload);
         }
 
         public async Task ForwardAsync<TOut>(string label, TOut payload) where TOut : class
         {
-            await this.Delivery.Forward(label.ToMessageLabel(), payload);
+            await Delivery.Forward(label.ToMessageLabel(), payload);
         }
 
         /// <summary>
@@ -95,7 +98,7 @@ namespace Contour.Receiving
         /// <typeparam name="TOut">Тип сообщения.</typeparam>
         public void Forward<TOut>(MessageLabel label, TOut payload = default(TOut)) where TOut : class
         {
-            this.Delivery.Forward(label, payload);
+            Delivery.Forward(label, payload);
         }
 
         /// <summary>
@@ -106,7 +109,7 @@ namespace Contour.Receiving
         /// <typeparam name="TOut">Тип сообщения.</typeparam>
         public void Forward<TOut>(string label, TOut payload = default(TOut)) where TOut : class
         {
-            this.Forward(label.ToMessageLabel(), payload);
+            Forward(label.ToMessageLabel(), payload);
         }
 
         /// <summary>
@@ -117,7 +120,7 @@ namespace Contour.Receiving
         /// </param>
         public void Reject(bool requeue)
         {
-            this.Delivery.Reject(requeue);
+            Delivery.Reject(requeue);
         }
 
         /// <summary>
@@ -129,17 +132,20 @@ namespace Contour.Receiving
         /// <param name="expires">Настройки, которые определяют время пока ответ актуален.</param>
         public void Reply<TResponse>(TResponse response, Expires expires = null) where TResponse : class
         {
-            var headers = new Dictionary<string, object>();
+            if (!Delivery.CanReply)
+                return;
+            
+            var replyHeaders = new Dictionary<string, object>();
 
             if (expires != null)
             {
-                headers[Headers.Expires] = expires.ToString();
+                replyHeaders[Headers.Expires] = expires.ToString();
             }
 
-            if (this.Delivery.CanReply)
-            {
-                this.Delivery.ReplyWith(new Message<TResponse>(MessageLabel.Empty, headers, response));
-            }
+            // Copy trace context from original message to reply
+            W3CTraceContextProvider.CopyTraceContextFromMessage(replyHeaders, Message);
+
+            Delivery.ReplyWith(new Message<TResponse>(MessageLabel.Empty, replyHeaders, response));
         }
     }
 }

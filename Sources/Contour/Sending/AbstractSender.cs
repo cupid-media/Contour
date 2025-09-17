@@ -50,14 +50,14 @@ namespace Contour.Sending
         protected AbstractSender(IEndpoint endpoint, ISenderConfiguration configuration, IEnumerable<IMessageExchangeFilter> filters)
         {
             this.endpoint = endpoint;
-            this.breadCrumbsTail = ";" + endpoint.Address;
+            breadCrumbsTail = ";" + endpoint.Address;
 
-            this.filters = new SendingExchangeFilter(this.InternalSend)
+            this.filters = new SendingExchangeFilter(InternalSend)
                 .ToEnumerable()
                 .Union(filters)
                 .ToList();
 
-            this.Configuration = configuration;
+            Configuration = configuration;
         }
 
         /// <summary>
@@ -77,7 +77,7 @@ namespace Contour.Sending
         /// <returns><c>true</c> - если можно создать маршрут.</returns>
         public virtual bool CanRoute(MessageLabel label)
         {
-            return label.IsAlias ? label.Name.Equals(this.Configuration.Alias) : label.Equals(this.Configuration.Label);
+            return label.IsAlias ? label.Name.Equals(Configuration.Alias) : label.Equals(Configuration.Label);
         }
 
         /// <summary>
@@ -97,10 +97,10 @@ namespace Contour.Sending
         public Task<T> Request<T>(object payload, IDictionary<string, object> headers) where T : class
         {
             Headers.ApplySentTimestamp(headers);
-            var message = new Message(this.Configuration.Label, headers, payload);
+            var message = new Message(Configuration.Label, headers, payload);
 
             var exchange = new MessageExchange(message, typeof(T));
-            var invoker = new MessageExchangeFilterInvoker(this.filters);
+            var invoker = new MessageExchangeFilterInvoker(filters);
 
             return invoker.Process(exchange)
                 .ContinueWith(
@@ -122,12 +122,12 @@ namespace Contour.Sending
         /// <returns>Request processing task.</returns>
         public Task<T> Request<T>(object payload, RequestOptions options) where T : class
         {
-            var headers = this.ApplyOptions(options);
+            var headers = ApplyOptions(options);
             headers[Headers.CorrelationId] = Guid.NewGuid().ToString("n");
 
             Logger.Trace(m => m("Message original Id [{0}], correlation Id [{1}].", Headers.GetString(headers, Headers.OriginalMessageId), Headers.GetString(headers, Headers.CorrelationId)));
 
-            return this.Request<T>(payload, headers);
+            return Request<T>(payload, headers);
         }
 
         /// <summary>
@@ -140,9 +140,9 @@ namespace Contour.Sending
         public Task Send(object payload, IDictionary<string, object> headers)
         {
             Headers.ApplySentTimestamp(headers);
-            var message = new Message(this.Configuration.Label, headers, payload);
+            var message = new Message(Configuration.Label, headers, payload);
 
-            return this.ProcessFilter(message, null);
+            return ProcessFilter(message, null);
         }
 
         /// <summary>
@@ -154,7 +154,7 @@ namespace Contour.Sending
         [Obsolete("Необходимо использовать метод Send с указанием метки сообщения.")]
         public Task Send(object payload, PublishingOptions options)
         {
-            return this.Send(payload, this.ApplyOptions(options));
+            return Send(payload, ApplyOptions(options));
         }
 
         /// <summary>
@@ -169,10 +169,10 @@ namespace Contour.Sending
         /// <returns>Request processing task.</returns>
         public Task<T> Request<T>(MessageLabel label, object payload, RequestOptions options) where T : class
         {
-            var headers = this.ApplyOptions(options);
+            var headers = ApplyOptions(options);
             headers[Headers.CorrelationId] = Guid.NewGuid().ToString("n");
             
-            return this.Request<T>(label, payload, headers);
+            return Request<T>(label, payload, headers);
         }
 
         /// <summary>
@@ -194,10 +194,10 @@ namespace Contour.Sending
             }
 
             Logger.Trace($"Requesting: label=[{label}], correlationId=[{headers[Headers.CorrelationId]}]");
-            var message = new Message(this.Configuration.Label.Equals(MessageLabel.Any) ? label : this.Configuration.Label, headers, payload);
+            var message = new Message(Configuration.Label.Equals(MessageLabel.Any) ? label : Configuration.Label, headers, payload);
 
             var exchange = new MessageExchange(message, typeof(T));
-            var invoker = new MessageExchangeFilterInvoker(this.filters);
+            var invoker = new MessageExchangeFilterInvoker(filters);
 
             return invoker.Process(exchange)
                 .ContinueWith(
@@ -218,11 +218,11 @@ namespace Contour.Sending
         /// <returns>Задача выполнения отправки сообщения.</returns>
         private Task Send(MessageLabel label, object payload, PublishingOptions options, string connectionKey)
         {
-            var headers = this.ApplyOptions(options);
+            var headers = ApplyOptions(options);
             Headers.ApplySentTimestamp(headers);
-            var messageLabel = this.Configuration.Label.Equals(MessageLabel.Any) ? label : this.Configuration.Label;
+            var messageLabel = Configuration.Label.Equals(MessageLabel.Any) ? label : Configuration.Label;
 
-            return this.ProcessFilter(new Message(messageLabel, headers, payload), connectionKey);
+            return ProcessFilter(new Message(messageLabel, headers, payload), connectionKey);
         }
 
         /// <summary>
@@ -235,7 +235,7 @@ namespace Contour.Sending
         /// <returns>Задача выполнения отправки сообщения.</returns>
         public Task Send(MessageLabel label, object payload, IDictionary<string, object> headers, string connectionKey)
         {
-            return this.Send(label, payload, new PublishingOptions { AdditionalHeaders = new Dictionary<string, object>(headers) }, connectionKey);
+            return Send(label, payload, new PublishingOptions { AdditionalHeaders = new Dictionary<string, object>(headers) }, connectionKey);
         }
         
         /// <summary>
@@ -247,7 +247,7 @@ namespace Contour.Sending
         /// <returns>Задача выполнения отправки сообщения.</returns>
         public Task Send(MessageLabel label, object payload, IDictionary<string, object> headers)
         {
-            return this.Send(label, payload, headers, null);
+            return Send(label, payload, headers, null);
         }
 
         /// <summary>
@@ -259,7 +259,7 @@ namespace Contour.Sending
         /// <returns>Задача выполнения отправки сообщения.</returns>
         public Task Send(MessageLabel label, object payload, PublishingOptions options)
         {
-            return this.Send(label, payload, options, null);
+            return Send(label, payload, options, null);
         }
 
         /// <summary>
@@ -288,7 +288,7 @@ namespace Contour.Sending
         private Task ProcessFilter(IMessage message, string connectionKey)
         {
             var exchange = new MessageExchange(message, null);
-            var invoker = new MessageExchangeFilterInvoker(this.filters);
+            var invoker = new MessageExchangeFilterInvoker(filters);
 
             return invoker.Process(exchange, connectionKey);
         }
@@ -300,20 +300,21 @@ namespace Contour.Sending
         /// <returns>Заголовки сообщения.</returns>
         private IDictionary<string, object> ApplyOptions(PublishingOptions options)
         {
-            var storage = this.Configuration.Options.GetIncomingMessageHeaderStorage().Value;
+            var storage = Configuration.Options.GetIncomingMessageHeaderStorage().Value;
             var inputHeaders = storage.Load() ?? new Dictionary<string, object>();
             var outputHeaders = new Dictionary<string, object>(inputHeaders);
 
-            Headers.ApplyBreadcrumbs(outputHeaders, this.endpoint.Address, options.BreadcrumbsPrefix);
+            Headers.ApplyBreadcrumbs(outputHeaders, endpoint.Address, options.BreadcrumbsPrefix);
             Headers.ApplyOriginalMessageId(outputHeaders);
 
-            Maybe<bool> persist = BusOptions.Pick(options.Persistently, this.Configuration.Options.IsPersistently());
+            Maybe<bool> persist = BusOptions.Pick(options.Persistently, Configuration.Options.IsPersistently());
             Headers.ApplyPersistently(outputHeaders, persist);
 
-            Maybe<TimeSpan?> ttl = BusOptions.Pick(options.Ttl, this.Configuration.Options.GetTtl());
+            Maybe<TimeSpan?> ttl = BusOptions.Pick(options.Ttl, Configuration.Options.GetTtl());
             Headers.ApplyTtl(outputHeaders, ttl);
+            
             Headers.ApplyAdditionalHeaders(outputHeaders, options.AdditionalHeaders);
-
+            
             return outputHeaders;
         }
 
@@ -324,9 +325,9 @@ namespace Contour.Sending
         /// <returns>Заголовки сообщения.</returns>
         private IDictionary<string, object> ApplyOptions(RequestOptions requestOptions)
         {
-            IDictionary<string, object> headers = this.ApplyOptions(requestOptions as PublishingOptions);
+            IDictionary<string, object> headers = ApplyOptions(requestOptions as PublishingOptions);
 
-            Maybe<TimeSpan?> timeout = BusOptions.Pick(requestOptions.Timeout, this.Configuration.Options.GetRequestTimeout());
+            Maybe<TimeSpan?> timeout = BusOptions.Pick(requestOptions.Timeout, Configuration.Options.GetRequestTimeout());
             if (timeout != null && timeout.HasValue)
             {
                 headers[Headers.Timeout] = timeout.Value;

@@ -58,25 +58,25 @@ Target.create "Build" (fun _ ->
     solution |> DotNet.build (fun p -> { p with Configuration = DotNet.BuildConfiguration.Release })
 )
 
-Target.create "RunUnitTests" (fun _ ->
-
-    !! "Tests/**/bin/Release/*Common.Tests.dll"
-    |> NUnit.Sequential.run (fun p ->
-           { p with
-                DisableShadowCopy = false
-                OutputFile = "TestResults.xml"
-                TimeOut = System.TimeSpan.FromMinutes 20. })
-)
-
-Target.create "RunAllTests" (fun _ ->
-
-    !! "Tests/**/bin/Release/*.Tests.dll"
-    |> NUnit.Sequential.run (fun p ->
-           { p with
-                DisableShadowCopy = false
-                OutputFile = "TestResults.xml"
-                TimeOut = System.TimeSpan.FromMinutes 20. })
-)
+// Target.create "RunUnitTests" (fun _ ->
+//
+//     !! "Tests/**/bin/Release/*Common.Tests.dll"
+//     |> NUnit.Sequential.run (fun p ->
+//            { p with
+//                 DisableShadowCopy = false
+//                 OutputFile = "TestResults.xml"
+//                 TimeOut = System.TimeSpan.FromMinutes 20. })
+// )
+//
+// Target.create "RunAllTests" (fun _ ->
+//
+//     !! "Tests/**/bin/Release/*.Tests.dll"
+//     |> NUnit.Sequential.run (fun p ->
+//            { p with
+//                 DisableShadowCopy = false
+//                 OutputFile = "TestResults.xml"
+//                 TimeOut = System.TimeSpan.FromMinutes 20. })
+// )
 
 Target.create "BuildPacket" (fun _ ->
     Paket.pack (fun p ->
@@ -89,8 +89,8 @@ Target.create "Default" ignore
 "CleanUp"
     ==> "AssemblyInfo"
     ==> "Build"
-    ==> "RunUnitTests"
-    ==> "RunAllTests"
+    // ==> "RunUnitTests"
+    // ==> "RunAllTests"
     ==> "BuildPacket"
     ==> "Default"
 

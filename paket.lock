@@ -86,7 +86,7 @@ NUGET
     NuGet.CommandLine (2.8.6)
     NUnit (2.6.4)
     NUnit.Runners (2.6.4)
-    RabbitMQ.Client (5.0.1)
+    RabbitMQ.Client (6.1.0)
       Microsoft.Diagnostics.Tracing.EventSource.Redist (>= 1.1.28) - restriction: >= net451
       NETStandard.Library (>= 1.6.1) - restriction: && (< net451) (>= netstandard1.5)
       System.Collections.Concurrent (>= 4.3) - restriction: && (< net451) (>= netstandard1.5)

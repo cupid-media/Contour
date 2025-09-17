@@ -1,4 +1,7 @@
-﻿## 3.0.0-pr2
+﻿## 3.1.4-pr8
+	add traceparent and tracestate propagation
+
+## 3.0.0-pr2
 	fix fowrard on one pool (need refactoring in next versions)
 
 

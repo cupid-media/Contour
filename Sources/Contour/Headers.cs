@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Text;
 
 using Contour.Helpers;
@@ -80,6 +81,9 @@ namespace Contour
         /// Максимальное количество байт, которые занимают сообщения в очереди
         /// </summary>
         public static readonly string QueueMaxLengthBytes = "x-max-length-bytes";
+        
+        public static readonly string TraceParent = "traceparent";
+        public static readonly string TraceState = "tracestate";
 
         /// <summary>
         /// Хранилище для заголовков контура
@@ -138,7 +142,7 @@ namespace Contour
         /// <param name="endpoint">Имя конечной точки записываемой в заголовок.</param>
         /// <param name="prefix">Внешний префикс, который вставляется при первичной инициализации Breadcrumbs</param>
         /// <returns>Исходная колллекция заголовков с изменениями.</returns>
-        public static IDictionary<string, object> ApplyBreadcrumbs(IDictionary<string, object> headers, string endpoint, string prefix = null)
+        public static void ApplyBreadcrumbs(IDictionary<string, object> headers, string endpoint, string prefix = null)
         {
             if (!headers.ContainsKey(Breadcrumbs))
             {
@@ -148,8 +152,6 @@ namespace Contour
             {
                 headers[Breadcrumbs] = GetString(headers, Breadcrumbs) + ";" + endpoint;
             }
-
-            return headers;            
         }
 
         /// <summary>
@@ -157,14 +159,12 @@ namespace Contour
         /// </summary>
         /// <param name="headers">Исходная коллекция заголовков, которая подвергается изменениям.</param>
         /// <returns>Исходная колллекция заголовков с изменениями.</returns>
-        public static IDictionary<string, object> ApplyOriginalMessageId(IDictionary<string, object> headers)
+        public static void ApplyOriginalMessageId(IDictionary<string, object> headers)
         {
             if (!headers.ContainsKey(OriginalMessageId))
             {
                 headers[OriginalMessageId] = Guid.NewGuid().ToString("n");
             }
-
-            return headers;
         }
 
         /// <summary>
@@ -173,14 +173,12 @@ namespace Contour
         /// <param name="headers">Исходная коллекция заголовков, которая подвергается изменениям.</param>
         /// <param name="persistently">Настройки персистентности сообщения.</param>
         /// <returns>Исходная колллекция заголовков с изменениями.</returns>
-        public static IDictionary<string, object> ApplyPersistently(IDictionary<string, object> headers, Maybe<bool> persistently)
+        public static void ApplyPersistently(IDictionary<string, object> headers, Maybe<bool> persistently)
         {
             if (persistently != null && persistently.HasValue)
             {
                 headers[Persist] = persistently.Value;
             }
-
-            return headers;
         }
 
         /// <summary>
@@ -189,14 +187,12 @@ namespace Contour
         /// <param name="headers">Исходная коллекция заголовков, которая подвергается изменениям.</param>
         /// <param name="ttl">Настройки персистентности сообщения.</param>
         /// <returns>Исходная колллекция заголовков с изменениями.</returns>
-        public static IDictionary<string, object> ApplyTtl(IDictionary<string, object> headers, Maybe<TimeSpan?> ttl)
+        public static void ApplyTtl(IDictionary<string, object> headers, Maybe<TimeSpan?> ttl)
         {
             if (ttl != null && ttl.HasValue)
             {
                 headers[Ttl] = ttl.Value;
             }
-
-            return headers;
         }
 
         public static void ApplySentTimestamp(IDictionary<string, object> headers)
@@ -212,11 +208,11 @@ namespace Contour
         /// <param name="headers">Исходная коллекция заголовков, которая подвергается изменениям.</param>
         /// <param name="additionalHeaders">Дополнительная коллекция заголовков, которые надо смерджить с исходной коллекцией</param>
         /// <returns>Исходная колллекция заголовков с изменениями.</returns>
-        public static IDictionary<string, object> ApplyAdditionalHeaders(IDictionary<string, object> headers, IDictionary<string, object> additionalHeaders)
+        public static void ApplyAdditionalHeaders(IDictionary<string, object> headers, IDictionary<string, object> additionalHeaders)
         {
             if (additionalHeaders == null || additionalHeaders.Count == 0)
             {
-                return headers;
+                return;
             }
 
             foreach (var header in additionalHeaders)
@@ -233,8 +229,6 @@ namespace Contour
                     }
                 }
             }
-            
-            return headers;
         }
 
         private static string GetStringPrivate(IDictionary<string, object> headers, string key)
