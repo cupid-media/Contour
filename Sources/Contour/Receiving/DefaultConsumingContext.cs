@@ -142,7 +142,8 @@ namespace Contour.Receiving
                 replyHeaders[Headers.Expires] = expires.ToString();
             }
 
-            W3CTraceContextProvider.CopyTraceContextFromMessage(replyHeaders, Message);
+            // TODO: start producer activity
+            W3CTraceContextProvider.InjectTraceContext(replyHeaders, Message);
 
             Delivery.ReplyWith(new Message<TResponse>(MessageLabel.Empty, replyHeaders, response));
         }

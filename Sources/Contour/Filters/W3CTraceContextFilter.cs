@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using System.Threading.Tasks;
 using Contour.Tracing;
 
@@ -10,10 +11,21 @@ namespace Contour.Filters
     {
         public async Task<MessageExchange> Process(MessageExchange exchange, MessageExchangeFilterInvoker invoker, string connectionKey)
         {
-            // For outgoing messages, copy trace context from incoming message if available
-            if (exchange.Out?.Headers != null && exchange.In != null)
+            if (exchange.In != null)
             {
-                W3CTraceContextProvider.CopyTraceContextFromMessage(exchange.Out.Headers, exchange.In);
+                // TODO: check if it will be disposed.
+                // if not - what can we do? maybe move this out of filter?
+                exchange.In?.StartActivityWithMessageContext();
+            }
+
+            
+            // For outgoing messages, copy trace context from current activity,
+            // or incoming message if available 
+            if (exchange.Out?.Headers != null)
+            {
+                // TODO: start producer activity
+                exchange.Out?.StartActivityWithMessageContext();
+                W3CTraceContextProvider.InjectTraceContext(exchange.Out.Headers, exchange.In);
             }
 
             // Continue with filter chain - no Activity manipulation needed

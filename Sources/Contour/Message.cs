@@ -179,37 +179,5 @@ namespace Contour
         {
             return new Message<T1>(Label, Headers, payload);
         }
-
-        /// <summary>
-        /// Tries to extract W3C trace context from message headers to create parent ActivityContext
-        /// </summary>
-        /// <param name="parentContext">The extracted parent ActivityContext if successful</param>
-        /// <returns>True if valid trace context was extracted and parsed successfully</returns>
-        public bool TryGetParentActivityContext(out ActivityContext parentContext)
-        {
-            parentContext = default;
-
-            if (!W3CTraceContextProvider.TryExtractTraceContext(this, out var traceParent, out var traceState))
-                return false;
-
-            try
-            {
-                // Parse the W3C traceparent format: 00-{traceId}-{spanId}-{flags}
-                var parts = traceParent.Split('-');
-                if (parts.Length != 4 || parts[0] != "00")
-                    return false;
-
-                var traceId = ActivityTraceId.CreateFromString(parts[1].AsSpan());
-                var spanId = ActivitySpanId.CreateFromString(parts[2].AsSpan());
-                var traceFlags = (ActivityTraceFlags)byte.Parse(parts[3], System.Globalization.NumberStyles.HexNumber);
-
-                parentContext = new ActivityContext(traceId, spanId, traceFlags, traceState);
-                return true;
-            }
-            catch
-            {
-                return false;
-            }
-        }
     }
 }

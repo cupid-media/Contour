@@ -37,38 +37,12 @@ namespace Contour.Tracing
         }
 
         /// <summary>
-        /// Injects trace context headers into outgoing message headers
-        /// </summary>
-        /// <param name="headers">Message headers to inject trace context into</param>
-        /// <param name="traceParent">W3C traceparent header value</param>
-        /// <param name="traceState">W3C tracestate header value (optional)</param>
-        public static void InjectTraceContext(IDictionary<string, object> headers, string traceParent, string traceState = null)
-        {
-            if (headers == null || string.IsNullOrWhiteSpace(traceParent))
-                return;
-
-            try
-            {
-                headers[Headers.TraceParent] = traceParent;
-
-                if (!string.IsNullOrEmpty(traceState))
-                {
-                    headers[Headers.TraceState] = traceState;
-                }
-            }
-            catch (Exception)
-            {
-                // Don't break message sending if trace context injection fails
-            }
-        }
-
-        /// <summary>
         /// Copies trace context from current activity or source message to outgoing message headers, 
         /// generating a new span ID for the outgoing message
         /// </summary>
         /// <param name="headers">Message headers to inject trace context into</param>
         /// <param name="sourceMessage">Source message to copy trace context from if no current activity</param>
-        public static void CopyTraceContextFromMessage(IDictionary<string, object> headers, IMessage sourceMessage)
+        public static void InjectTraceContext(IDictionary<string, object> headers, IMessage? sourceMessage)
         {
             if (headers == null)
                 return;
