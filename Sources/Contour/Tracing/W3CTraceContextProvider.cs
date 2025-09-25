@@ -42,7 +42,7 @@ namespace Contour.Tracing
         /// </summary>
         /// <param name="headers">Message headers to inject trace context into</param>
         /// <param name="sourceMessage">Source message to copy trace context from if no current activity</param>
-        public static void InjectTraceContext(IDictionary<string, object> headers, IMessage? sourceMessage)
+        public static void InjectTraceContext(IDictionary<string, object> headers, IMessage sourceMessage)
         {
             if (headers == null)
                 return;

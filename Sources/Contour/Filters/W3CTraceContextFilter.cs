@@ -1,35 +1,58 @@
-using System.Collections.Generic;
+using System;
 using System.Threading.Tasks;
 using Contour.Tracing;
 
 namespace Contour.Filters
 {
     /// <summary>
-    /// Message exchange filter that handles W3C trace context header propagation
+    /// Message exchange filter that handles W3C trace context header propagation and Activity management
     /// </summary>
     public class W3CTraceContextFilter : IMessageExchangeFilter
     {
         public async Task<MessageExchange> Process(MessageExchange exchange, MessageExchangeFilterInvoker invoker, string connectionKey)
         {
-            if (exchange.In != null)
+            // Start producer activity for outgoing messages
+            if (exchange.Out != null)
             {
-                // TODO: check if it will be disposed.
-                // if not - what can we do? maybe move this out of filter?
-                exchange.In?.StartActivityWithMessageContext();
+                exchange.ActivityManager.StartProducerActivity(
+                    exchange.In, exchange.Out, 
+                    $"Send message to {exchange.Out.Label.Name}");
+                
+                // Inject trace context into outgoing message headers
+                if (exchange.Out.Headers != null)
+                {
+                    W3CTraceContextProvider.InjectTraceContext(exchange.Out.Headers, exchange.In);
+                }
             }
 
-            
-            // For outgoing messages, copy trace context from current activity,
-            // or incoming message if available 
-            if (exchange.Out?.Headers != null)
+            try
             {
-                // TODO: start producer activity
-                exchange.Out?.StartActivityWithMessageContext();
-                W3CTraceContextProvider.InjectTraceContext(exchange.Out.Headers, exchange.In);
+                // Continue with filter chain
+                var result = await invoker.Continue(exchange, connectionKey);
+                
+                // Complete activities with success status
+                exchange.ActivityManager.CompleteConsumerActivity();
+                exchange.ActivityManager.CompleteProducerActivity();
+                
+                return result;
             }
-
-            // Continue with filter chain - no Activity manipulation needed
-            return await invoker.Continue(exchange, connectionKey);
+            catch (Exception ex)
+            {
+                // Set error status on activities before completing them
+                if (exchange.In != null)
+                {
+                    exchange.ActivityManager.SetConsumerActivityError(ex);
+                    exchange.ActivityManager.CompleteConsumerActivity();
+                }
+                
+                if (exchange.Out != null)
+                {
+                    exchange.ActivityManager.SetProducerActivityError(ex);
+                    exchange.ActivityManager.CompleteProducerActivity();
+                }
+                
+                throw;
+            }
         }
 
         public async Task<MessageExchange> Process(MessageExchange exchange, MessageExchangeFilterInvoker invoker)

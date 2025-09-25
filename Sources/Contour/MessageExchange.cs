@@ -1,6 +1,7 @@
 ﻿namespace Contour
 {
     using System;
+    using Tracing;
 
     /// <summary>
     /// The message exchange.
@@ -20,6 +21,7 @@
         {
             this.Out = @out;
             this.ExpectedResponseType = expectedResponseType;
+            this.ActivityManager = new ActivityManager();
         }
 
         /// <summary>
@@ -32,6 +34,11 @@
             : this(@out, null)
         {
         }
+
+        /// <summary>
+        /// Gets the activity manager for this message exchange
+        /// </summary>
+        public ActivityManager ActivityManager { get; private set; }
 
         /// <summary>
         /// Gets or sets the exception.

@@ -1,4 +1,4 @@
-﻿## 3.1.4-pr4
+﻿## 3.1.4-pr4.10
 	add traceparent and tracestate propagation
 
 ## 3.0.0-pr2

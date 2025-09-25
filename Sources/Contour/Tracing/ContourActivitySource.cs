@@ -4,5 +4,5 @@ namespace Contour.Tracing;
 
 public static class ContourActivitySource
 {
-    public static readonly ActivitySource Source = new ActivitySource("Contour");
+    public static readonly ActivitySource Source = new("Contour");
 }

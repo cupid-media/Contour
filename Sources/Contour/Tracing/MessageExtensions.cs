@@ -8,7 +8,7 @@ namespace Contour.Tracing;
 public static class MessageExtensions
 {
     /// <summary>
-    /// Starts a new activity with trace context from the message as parent
+    /// Starts a new activity with trace context from the message as parent (or fresh trace if no parent context)
     /// </summary>
     /// <param name="message">The message to extract trace context from</param>
     /// <param name="name">Activity name. Defaults to caller method name.</param>

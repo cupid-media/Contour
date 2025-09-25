@@ -1,9 +1,7 @@
 ﻿using System;
 using System.Collections.Generic;
-using System.Text;
 using System.Threading.Tasks;
-using Contour.Helpers;
-using Contour.Tracing; // Add this using statement
+using Contour.Tracing;
 
 namespace Contour.Receiving
 {
@@ -14,6 +12,8 @@ namespace Contour.Receiving
     internal class DefaultConsumingContext<T> : IConsumingContext<T>, IDeliveryContext
         where T : class
     {
+        private readonly ActivityManager consumerActivityManager = new();
+
         /// <summary>
         /// Initializes a new instance of the <see cref="DefaultConsumingContext{T}"/> class. 
         /// </summary>
@@ -31,6 +31,7 @@ namespace Contour.Receiving
             Message = message;
             Delivery = delivery;
             Bus = busContext;
+            consumerActivityManager.StartConsumerActivity(message, $"Consume message from {Delivery.Label.Name}");
         }
 
         /// <summary>
@@ -82,12 +83,12 @@ namespace Contour.Receiving
 
         public async Task ForwardAsync(string label)
         {
-            await Delivery.Forward(label.ToMessageLabel(), Message.Payload);
+            await ForwardWithActivityAsync(label.ToMessageLabel(), Message.Payload);
         }
 
         public async Task ForwardAsync<TOut>(string label, TOut payload) where TOut : class
         {
-            await Delivery.Forward(label.ToMessageLabel(), payload);
+            await ForwardWithActivityAsync(label.ToMessageLabel(), payload);
         }
 
         /// <summary>
@@ -98,7 +99,7 @@ namespace Contour.Receiving
         /// <typeparam name="TOut">Тип сообщения.</typeparam>
         public void Forward<TOut>(MessageLabel label, TOut payload = default(TOut)) where TOut : class
         {
-            Delivery.Forward(label, payload);
+            ForwardWithActivity(label, payload);
         }
 
         /// <summary>
@@ -113,14 +114,93 @@ namespace Contour.Receiving
         }
 
         /// <summary>
-        /// Помечает сообщение как необработанное.
+        /// Forwards a message with proper Activity management (synchronous)
         /// </summary>
-        /// <param name="requeue">
-        /// Сообщение требуется вернуть во входящую очередь для повторной обработки.
-        /// </param>
-        public void Reject(bool requeue)
+        private void ForwardWithActivity<TOut>(MessageLabel label, TOut payload) where TOut : class
         {
-            Delivery.Reject(requeue);
+            consumerActivityManager.CompleteConsumerActivity();
+            
+            // Create a temporary message for activity tracking
+            var forwardMessage = new Message<TOut>(label, new Dictionary<string, object>(), payload);
+            
+            try
+            {
+                // Start producer activity for forward message
+                var forwardActivity = consumerActivityManager.StartProducerActivity(Message, forwardMessage, 
+                    $"Forward to {Delivery.Label.Name}");
+                
+                // Add forward-specific tags
+                if (forwardActivity != null)
+                {
+                    forwardActivity.SetTag("messaging.operation", "forward");
+                    forwardActivity.SetTag("messaging.destination", label.Name);
+                    if (Message.Headers.TryGetValue(Headers.CorrelationId, out var originalId))
+                    {
+                        forwardActivity.SetTag("messaging.source_message_id", originalId?.ToString());
+                    }
+                }
+
+                // Inject trace context into forward message headers
+                W3CTraceContextProvider.InjectTraceContext(forwardMessage.Headers, Message);
+
+                // Forward the message
+                Delivery.Forward(label, payload);
+                
+                // Complete activity with success
+                consumerActivityManager.CompleteProducerActivity();
+            }
+            catch (Exception ex)
+            {
+                // Set error status and complete activity
+                consumerActivityManager.SetProducerActivityError(ex);
+                consumerActivityManager.CompleteProducerActivity();
+                throw;
+            }
+        }
+
+        /// <summary>
+        /// Forwards a message with proper Activity management (asynchronous)
+        /// </summary>
+        private async Task ForwardWithActivityAsync<TOut>(MessageLabel label, TOut payload) where TOut : class
+        {
+            consumerActivityManager.CompleteConsumerActivity();
+            
+            // Create a temporary message for activity tracking
+            var forwardMessage = new Message<TOut>(label, new Dictionary<string, object>(), payload);
+            
+            try
+            {
+                // Start producer activity for forward message
+                var forwardActivity = consumerActivityManager.StartProducerActivity(Message, forwardMessage, 
+                    $"Forward to {Delivery.Label.Name}");
+                
+                // Add forward-specific tags
+                if (forwardActivity != null)
+                {
+                    forwardActivity.SetTag("messaging.operation", "forward");
+                    forwardActivity.SetTag("messaging.destination", label.Name);
+                    if (Message.Headers.TryGetValue(Headers.CorrelationId, out var originalId))
+                    {
+                        forwardActivity.SetTag("messaging.source_message_id", originalId?.ToString());
+                    }
+                }
+
+                // Inject trace context into forward message headers
+                W3CTraceContextProvider.InjectTraceContext(forwardMessage.Headers, Message);
+
+                // Forward the message
+                await Delivery.Forward(label, payload);
+                
+                // Complete activity with success
+                consumerActivityManager.CompleteProducerActivity();
+            }
+            catch (Exception ex)
+            {
+                // Set error status and complete activity
+                consumerActivityManager.SetProducerActivityError(ex);
+                consumerActivityManager.CompleteProducerActivity();
+                throw;
+            }
         }
 
         /// <summary>
@@ -132,6 +212,8 @@ namespace Contour.Receiving
         /// <param name="expires">Настройки, которые определяют время пока ответ актуален.</param>
         public void Reply<TResponse>(TResponse response, Expires expires = null) where TResponse : class
         {
+            consumerActivityManager.CompleteConsumerActivity();
+
             if (!Delivery.CanReply)
                 return;
             
@@ -141,11 +223,53 @@ namespace Contour.Receiving
             {
                 replyHeaders[Headers.Expires] = expires.ToString();
             }
+            
+            var replyMessage = new Message<TResponse>(MessageLabel.Empty, replyHeaders, response);
+            
+            try
+            {
+                // Start producer activity for reply message
+                var replyActivity = consumerActivityManager.StartProducerActivity(Message, replyMessage, 
+                    $"Reply to {Delivery.Label.Name}");
+                
+                // Add reply-specific tags
+                if (replyActivity != null)
+                {
+                    replyActivity.SetTag("messaging.operation", "reply");
+                    if (Message.Headers.TryGetValue(Headers.CorrelationId, out var correlationId))
+                    {
+                        replyActivity.SetTag("messaging.conversation_id", correlationId?.ToString());
+                    }
+                }
 
-            // TODO: start producer activity
-            W3CTraceContextProvider.InjectTraceContext(replyHeaders, Message);
+                // Inject trace context into reply headers
+                W3CTraceContextProvider.InjectTraceContext(replyHeaders, Message);
 
-            Delivery.ReplyWith(new Message<TResponse>(MessageLabel.Empty, replyHeaders, response));
+                // Send the reply
+                Delivery.ReplyWith(replyMessage);
+                
+                // Complete activity with success
+                consumerActivityManager.CompleteProducerActivity();
+            }
+            catch (Exception ex)
+            {
+                // Set error status and complete activity
+                consumerActivityManager.SetProducerActivityError(ex);
+                consumerActivityManager.CompleteProducerActivity();
+                throw;
+            }
+        }
+        
+        /// <summary>
+        /// Помечает сообщение как необработанное.
+        /// </summary>
+        /// <param name="requeue">
+        /// Сообщение требуется вернуть во входящую очередь для повторной обработки.
+        /// </param>
+        public void Reject(bool requeue)
+        {
+            consumerActivityManager.CompleteConsumerActivity();
+            Delivery.Reject(requeue);
         }
     }
 }
