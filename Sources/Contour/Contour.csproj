@@ -4,7 +4,7 @@
     <TargetFramework>netstandard2.0</TargetFramework>
     <IsPackable>true</IsPackable>
     <PackageId>Contour</PackageId>
-    <Version>3.1.4-pr4.10</Version>
+    <Version>3.1.4-pr4.12</Version>
     <PackageReleaseNotes>See RELEASE_NOTES.md</PackageReleaseNotes>
     <PackageTags>contour servicebus bus</PackageTags>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>

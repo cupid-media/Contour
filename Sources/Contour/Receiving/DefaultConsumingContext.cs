@@ -118,18 +118,13 @@ namespace Contour.Receiving
         /// </summary>
         private void ForwardWithActivity<TOut>(MessageLabel label, TOut payload) where TOut : class
         {
-            consumerActivityManager.CompleteConsumerActivity();
-            
-            // Create a temporary message for activity tracking
             var forwardMessage = new Message<TOut>(label, new Dictionary<string, object>(), payload);
             
             try
             {
-                // Start producer activity for forward message
                 var forwardActivity = consumerActivityManager.StartProducerActivity(Message, forwardMessage, 
                     $"Forward to {Delivery.Label.Name}");
                 
-                // Add forward-specific tags
                 if (forwardActivity != null)
                 {
                     forwardActivity.SetTag("messaging.operation", "forward");
@@ -140,20 +135,18 @@ namespace Contour.Receiving
                     }
                 }
 
-                // Inject trace context into forward message headers
                 W3CTraceContextProvider.InjectTraceContext(forwardMessage.Headers, Message);
 
-                // Forward the message
                 Delivery.Forward(label, payload);
                 
-                // Complete activity with success
                 consumerActivityManager.CompleteProducerActivity();
+                consumerActivityManager.CompleteConsumerActivity();
             }
             catch (Exception ex)
             {
-                // Set error status and complete activity
                 consumerActivityManager.SetProducerActivityError(ex);
                 consumerActivityManager.CompleteProducerActivity();
+                consumerActivityManager.CompleteConsumerActivity();
                 throw;
             }
         }
@@ -163,18 +156,13 @@ namespace Contour.Receiving
         /// </summary>
         private async Task ForwardWithActivityAsync<TOut>(MessageLabel label, TOut payload) where TOut : class
         {
-            consumerActivityManager.CompleteConsumerActivity();
-            
-            // Create a temporary message for activity tracking
             var forwardMessage = new Message<TOut>(label, new Dictionary<string, object>(), payload);
             
             try
             {
-                // Start producer activity for forward message
                 var forwardActivity = consumerActivityManager.StartProducerActivity(Message, forwardMessage, 
                     $"Forward to {Delivery.Label.Name}");
                 
-                // Add forward-specific tags
                 if (forwardActivity != null)
                 {
                     forwardActivity.SetTag("messaging.operation", "forward");
@@ -185,20 +173,18 @@ namespace Contour.Receiving
                     }
                 }
 
-                // Inject trace context into forward message headers
                 W3CTraceContextProvider.InjectTraceContext(forwardMessage.Headers, Message);
 
-                // Forward the message
                 await Delivery.Forward(label, payload);
                 
-                // Complete activity with success
                 consumerActivityManager.CompleteProducerActivity();
+                consumerActivityManager.CompleteConsumerActivity();
             }
             catch (Exception ex)
             {
-                // Set error status and complete activity
                 consumerActivityManager.SetProducerActivityError(ex);
                 consumerActivityManager.CompleteProducerActivity();
+                consumerActivityManager.CompleteConsumerActivity();
                 throw;
             }
         }
@@ -212,10 +198,11 @@ namespace Contour.Receiving
         /// <param name="expires">Настройки, которые определяют время пока ответ актуален.</param>
         public void Reply<TResponse>(TResponse response, Expires expires = null) where TResponse : class
         {
-            consumerActivityManager.CompleteConsumerActivity();
-
             if (!Delivery.CanReply)
+            {
+                consumerActivityManager.CompleteConsumerActivity();
                 return;
+            }
             
             var replyHeaders = new Dictionary<string, object>();
 
@@ -228,11 +215,9 @@ namespace Contour.Receiving
             
             try
             {
-                // Start producer activity for reply message
                 var replyActivity = consumerActivityManager.StartProducerActivity(Message, replyMessage, 
                     $"Reply to {Delivery.Label.Name}");
                 
-                // Add reply-specific tags
                 if (replyActivity != null)
                 {
                     replyActivity.SetTag("messaging.operation", "reply");
@@ -242,20 +227,18 @@ namespace Contour.Receiving
                     }
                 }
 
-                // Inject trace context into reply headers
                 W3CTraceContextProvider.InjectTraceContext(replyHeaders, Message);
 
-                // Send the reply
                 Delivery.ReplyWith(replyMessage);
                 
-                // Complete activity with success
                 consumerActivityManager.CompleteProducerActivity();
+                consumerActivityManager.CompleteConsumerActivity();
             }
             catch (Exception ex)
             {
-                // Set error status and complete activity
                 consumerActivityManager.SetProducerActivityError(ex);
                 consumerActivityManager.CompleteProducerActivity();
+                consumerActivityManager.CompleteConsumerActivity();
                 throw;
             }
         }

@@ -65,14 +65,10 @@ namespace Contour.Tracing
             if (disposed)
                 throw new ObjectDisposedException(nameof(ActivityManager));
 
-            // Dispose existing producer activity if any
             producerActivity?.Dispose();
 
-            producerActivity = parentMessage == null ? 
-                ContourActivitySource.Source.StartActivity(operationName, ActivityKind.Producer) : 
-                parentMessage.StartActivityWithMessageContext(operationName, ActivityKind.Producer);
+            producerActivity = ContourActivitySource.Source.StartActivity(operationName, ActivityKind.Producer);
             
-            // Add common tags for producer activities
             if (producerActivity != null)
             {
                 producerActivity.SetTag("messaging.operation", "produce");
