@@ -2,16 +2,28 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <TargetFramework>netstandard2.0</TargetFramework>
+    <IsPackable>true</IsPackable>
+    <PackageId>Contour</PackageId>
+    <Version>3.1.4-pr4.10</Version>
+    <PackageReleaseNotes>See RELEASE_NOTES.md</PackageReleaseNotes>
     <PackageTags>contour servicebus bus</PackageTags>
-    <PackageReleaseNotes>Added easier access to headers</PackageReleaseNotes>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <RepositoryUrl>https://github.com/SDVentures/Contour</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PackageProjectUrl>https://github.com/SDVentures/Contour</PackageProjectUrl>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
     <Copyright>Social Discovery Ventures © 2022</Copyright>
     <Description>The package contains abstract interfaces of service bus and specific transport implementation for AMQP/RabbitMQ</Description>
     <Company>Social Discovery Ventures</Company>
     <Authors>SDV Team, Cupid Media Team</Authors>
-    <Version>3.2.0</Version>
     <GeneratePackageOnBuild>false</GeneratePackageOnBuild>
     <LangVersion>12</LangVersion>
+    <TargetsForPack>$(TargetsForPack);_PrintPackageOutput</TargetsForPack>
   </PropertyGroup>
+  
+  <ItemGroup>
+    <None Include="..\..\README.md" Pack="true" PackagePath="" />
+  </ItemGroup>
   
   <ItemGroup>
     <PackageReference Include="Common.Logging" Version="3.4.1" />
@@ -20,4 +32,19 @@
     <PackageReference Include="System.Configuration.ConfigurationManager" Version="[4.5.0,)" />
     <PackageReference Include="System.Diagnostics.DiagnosticSource" Version="8.0.1" />
   </ItemGroup>
+
+  <Target Name="_PrintPackageOutput" AfterTargets="Pack">
+    <PropertyGroup>
+      <_OutDir>$(PackageOutputPath)</_OutDir>
+      <_OutDir Condition="'$(_OutDir)' == ''">$(OutputPath)</_OutDir>
+      <_PkgVersion>$(PackageVersion)</_PkgVersion>
+      <_PkgVersion Condition="'$(_PkgVersion)' == ''">$(Version)</_PkgVersion>
+      <_PkgName>$(PackageId).$(_PkgVersion).nupkg</_PkgName>
+      <_PkgFull>$(_OutDir)$([System.IO.Path]::DirectorySeparatorChar)$(_PkgName)</_PkgFull>
+    </PropertyGroup>
+    <Message Importance="High" Text="Package created: $(_PkgFull)" Condition="Exists('$(_PkgFull)')" />
+    <Message Importance="High" Text="Package created in: $(_OutDir)" Condition="!Exists('$(_PkgFull)')" />
+    <Exec Command="echo Package created: $(_PkgFull)" Condition="Exists('$(_PkgFull)')" />
+    <Exec Command="echo Package created in: $(_OutDir)" Condition="!Exists('$(_PkgFull)')" />
+  </Target>
 </Project>

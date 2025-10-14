@@ -1,0 +1,13 @@
+<Project>
+  <Target Name="PrintPackageOutput" AfterTargets="Pack">
+    <PropertyGroup>
+      <_PkgDir>$(PackageOutputPath)</_PkgDir>
+      <_PkgDir Condition=" '$(_PkgDir)' == '' ">$(OutputPath)</_PkgDir>
+      <_PkgName>$(PackageId).$(PackageVersion).nupkg</_PkgName>
+      <_PkgFull>$(_PkgDir)$([System.IO.Path]::DirectorySeparatorChar)$(_PkgName)</_PkgFull>
+    </PropertyGroup>
+    <Message Importance="High" Text="Package created: $(_PkgFull)" Condition=" Exists('$(_PkgFull)') " />
+    <Message Importance="High" Text="Package created in: $(_PkgDir)" Condition=" !Exists('$(_PkgFull)') " />
+  </Target>
+</Project>
+
