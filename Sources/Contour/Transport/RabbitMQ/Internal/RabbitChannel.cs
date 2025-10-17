@@ -299,6 +299,21 @@
 
             DiagnosticProps.Store(DiagnosticProps.Names.LastPublishAttemptConnectionString, this.ConnectionString);
 
+            var activity = Activity.Current;
+            if (activity != null)
+            {
+                activity.SetTag("messaging.rabbitmq.exchange", nativeRoute.Exchange ?? string.Empty);
+                if (!string.IsNullOrEmpty(nativeRoute.RoutingKey))
+                {
+                    activity.SetTag("messaging.rabbitmq.routing_key", nativeRoute.RoutingKey);
+                }
+                var sanitized = TryGetSanitizedBrokerUrl(this.ConnectionString);
+                if (!string.IsNullOrEmpty(sanitized))
+                {
+                    activity.SetTag("messaging.url", sanitized);
+                }
+            }
+
             this.SafeNativeInvoke(n => n.BasicPublish(nativeRoute.Exchange, nativeRoute.RoutingKey, false, props, body));
         }
 
@@ -436,6 +451,21 @@
             {
                 this.logger.Error($"Channel action failed due to {ex.Message}, connection string: [{this.ConnectionString}]", ex);
                 throw;
+            }
+        }
+
+        private static string TryGetSanitizedBrokerUrl(string connectionString)
+        {
+            try
+            {
+                var uri = new Uri(connectionString);
+                var hostPort = uri.IsDefaultPort ? uri.Host : $"{uri.Host}:{uri.Port}";
+                var path = uri.AbsolutePath;
+                return $"{uri.Scheme}://{hostPort}{path}";
+            }
+            catch
+            {
+                return null;
             }
         }
     }

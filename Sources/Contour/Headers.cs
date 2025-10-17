@@ -84,6 +84,7 @@ namespace Contour
         
         public static readonly string TraceParent = "traceparent";
         public static readonly string TraceState = "tracestate";
+        public static readonly string Forwarded = "x-forwarded";
 
         /// <summary>
         /// Хранилище для заголовков контура

@@ -13,22 +13,12 @@ namespace Contour.Tracing
         private bool disposed;
 
         /// <summary>
-        /// Gets the current consumer activity
-        /// </summary>
-        public Activity ConsumerActivity => consumerActivity;
-
-        /// <summary>
-        /// Gets the current producer activity
-        /// </summary>
-        public Activity ProducerActivity => producerActivity;
-
-        /// <summary>
         /// Starts a consumer activity for processing incoming messages
         /// </summary>
         /// <param name="message">The incoming message to extract trace context from</param>
         /// <param name="operationName">The operation name for the activity</param>
         /// <returns>The started consumer activity or null if not enabled</returns>
-        public Activity StartConsumerActivity(IMessage message, string operationName = "consume")
+        public void StartConsumerActivity(IMessage message, string operationName = "consume")
         {
             if (disposed)
                 throw new ObjectDisposedException(nameof(ActivityManager));
@@ -46,11 +36,9 @@ namespace Contour.Tracing
                 
                 if (message.Label != null)
                 {
-                    consumerActivity.SetTag("messaging.destination", message.Label.Name);
+                    consumerActivity.SetTag("messaging.queue", message.Label.Name);
                 }
             }
-
-            return consumerActivity;
         }
 
         /// <summary>
@@ -76,7 +64,7 @@ namespace Contour.Tracing
                 
                 if (producedMessage.Label != null)
                 {
-                    producerActivity.SetTag("messaging.destination", producedMessage.Label.Name);
+                    producerActivity.SetTag("messaging.queue", producedMessage.Label.Name);
                 }
             }
 

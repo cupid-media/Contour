@@ -1,7 +1,7 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
-using System.Globalization;
 using System.Threading.Tasks;
 
 using Contour.Configuration;
@@ -41,7 +41,7 @@ namespace Contour.Transport.RabbitMQ.Internal
         /// The bus Context.
         /// </param>
         /// <param name="channel">
-        /// Канал поставки сообщения.
+        /// Кан��л поставки сообщения.
         /// </param>
         /// <param name="args">
         /// Параметры поставки сообщения.
@@ -163,7 +163,30 @@ namespace Contour.Transport.RabbitMQ.Internal
                 message = (Message<T>)message.WithLabel(label);
             }
 
-            return new DefaultConsumingContext<T>(this.busContext, message, this);
+            var context = new DefaultConsumingContext<T>(this.busContext, message, this);
+
+            var activity = Activity.Current;
+            if (activity != null)
+            {
+                var exchange = this.Args.Exchange ?? string.Empty;
+                if (!string.IsNullOrEmpty(exchange))
+                {
+                    activity.SetTag("messaging.rabbitmq.exchange", exchange);
+                }
+
+                if (!string.IsNullOrEmpty(this.Args.RoutingKey))
+                {
+                    activity.SetTag("messaging.rabbitmq.routing_key", this.Args.RoutingKey);
+                }
+
+                var sanitized = TryGetSanitizedBrokerUrl(this.Channel.ConnectionString);
+                if (!string.IsNullOrEmpty(sanitized))
+                {
+                    activity.SetTag("messaging.url", sanitized);
+                }
+            }
+
+            return context;
         }
 
         /// <summary>
@@ -174,18 +197,18 @@ namespace Contour.Transport.RabbitMQ.Internal
         /// <returns>Задачи пересылки сообщения.</returns>
         public Task Forward(MessageLabel label, object payload)
         {
-            var headers = new Dictionary<string, object>(this.Headers);
-            headers[Contour.Headers.CorrelationId] = this.CorrelationId;
-            headers[Contour.Headers.ReplyRoute] = this.ReplyRoute;
+            var localHeaders = new Dictionary<string, object>(this.Headers);
+            localHeaders[Contour.Headers.CorrelationId] = this.CorrelationId;
+            localHeaders[Contour.Headers.ReplyRoute] = this.ReplyRoute;
             if (!string.IsNullOrEmpty(this.Args.BasicProperties.Expiration) && long.TryParse(this.Args.BasicProperties.Expiration, out var expiration))
             {
-                headers[Contour.Headers.Ttl] = TimeSpan.FromMilliseconds(expiration);
+                localHeaders[Contour.Headers.Ttl] = TimeSpan.FromMilliseconds(expiration);
             }
-            Contour.Headers.ApplyBreadcrumbs(headers, this.busContext.Endpoint.Address);
-            Contour.Headers.ApplyOriginalMessageId(headers);
+            Contour.Headers.ApplyBreadcrumbs(localHeaders, this.busContext.Endpoint.Address);
+            Contour.Headers.ApplyOriginalMessageId(localHeaders);
+            localHeaders[Contour.Headers.Forwarded] = true;
 
-            // TODO это костыль, как и само использование константы "document.contour.failed", возможно правильно было бы иметь отдельный метод ForwardToFault
-            return this.busContext.Emit(label, payload, headers, string.Equals(label.Name, SystemQueues.Fault, StringComparison.OrdinalIgnoreCase) || string.Equals(label.Name, SystemQueues.Unhandled, StringComparison.OrdinalIgnoreCase) ? null : this.Channel.ConnectionKey);
+            return this.busContext.Emit(label, payload, localHeaders, string.Equals(label.Name, SystemQueues.Fault, StringComparison.OrdinalIgnoreCase) || string.Equals(label.Name, SystemQueues.Unhandled, StringComparison.OrdinalIgnoreCase) ? null : this.Channel.ConnectionKey);
         }
 
         /// <summary>
@@ -260,6 +283,21 @@ namespace Contour.Transport.RabbitMQ.Internal
             }
 
             return h;
+        }
+
+        private static string TryGetSanitizedBrokerUrl(string connectionString)
+        {
+            try
+            {
+                var uri = new Uri(connectionString);
+                var hostPort = uri.IsDefaultPort ? uri.Host : $"{uri.Host}:{uri.Port}";
+                var path = uri.AbsolutePath;
+                return $"{uri.Scheme}://{hostPort}{path}";
+            }
+            catch
+            {
+                return null;
+            }
         }
     }
 }

@@ -14,10 +14,20 @@ namespace Contour.Filters
             // Start producer activity for outgoing messages
             if (exchange.Out != null)
             {
+                var forwarded = false;
+                if (exchange.Out.Headers != null 
+                    && exchange.Out.Headers.TryGetValue(Headers.Forwarded, out var fwdObj))
+                {
+                    if (fwdObj is true)
+                    {
+                        forwarded = true;
+                    }
+                }
+
+                var actionString = forwarded ? "Forward message" : (exchange.IsRequest ? "Send request" : "Emit message");
                 exchange.ActivityManager.StartProducerActivity(
-                    exchange.In, exchange.Out, 
-                    $"Send message to {exchange.Out.Label.Name}");
-                
+                    exchange.In, exchange.Out,
+                    $"{actionString} to queue '{exchange.Out.Label.Name}'");
                 // Inject trace context into outgoing message headers
                 if (exchange.Out.Headers != null)
                 {

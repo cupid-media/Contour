@@ -31,7 +31,7 @@ namespace Contour.Receiving
             Message = message;
             Delivery = delivery;
             Bus = busContext;
-            consumerActivityManager.StartConsumerActivity(message, $"Consume message from {Delivery.Label.Name}");
+            consumerActivityManager.StartConsumerActivity(message, $"Process message from queue '{Delivery.Label.Name}'");
         }
 
         /// <summary>
@@ -118,34 +118,14 @@ namespace Contour.Receiving
         /// </summary>
         private void ForwardWithActivity<TOut>(MessageLabel label, TOut payload) where TOut : class
         {
-            var forwardMessage = new Message<TOut>(label, new Dictionary<string, object>(), payload);
-            
             try
             {
-                var forwardActivity = consumerActivityManager.StartProducerActivity(Message, forwardMessage, 
-                    $"Forward to {Delivery.Label.Name}");
-                
-                if (forwardActivity != null)
-                {
-                    forwardActivity.SetTag("messaging.operation", "forward");
-                    forwardActivity.SetTag("messaging.destination", label.Name);
-                    if (Message.Headers.TryGetValue(Headers.CorrelationId, out var originalId))
-                    {
-                        forwardActivity.SetTag("messaging.source_message_id", originalId?.ToString());
-                    }
-                }
-
-                W3CTraceContextProvider.InjectTraceContext(forwardMessage.Headers, Message);
-
                 Delivery.Forward(label, payload);
-                
-                consumerActivityManager.CompleteProducerActivity();
                 consumerActivityManager.CompleteConsumerActivity();
             }
             catch (Exception ex)
             {
-                consumerActivityManager.SetProducerActivityError(ex);
-                consumerActivityManager.CompleteProducerActivity();
+                consumerActivityManager.SetConsumerActivityError(ex);
                 consumerActivityManager.CompleteConsumerActivity();
                 throw;
             }
@@ -156,34 +136,14 @@ namespace Contour.Receiving
         /// </summary>
         private async Task ForwardWithActivityAsync<TOut>(MessageLabel label, TOut payload) where TOut : class
         {
-            var forwardMessage = new Message<TOut>(label, new Dictionary<string, object>(), payload);
-            
             try
             {
-                var forwardActivity = consumerActivityManager.StartProducerActivity(Message, forwardMessage, 
-                    $"Forward to {Delivery.Label.Name}");
-                
-                if (forwardActivity != null)
-                {
-                    forwardActivity.SetTag("messaging.operation", "forward");
-                    forwardActivity.SetTag("messaging.destination", label.Name);
-                    if (Message.Headers.TryGetValue(Headers.CorrelationId, out var originalId))
-                    {
-                        forwardActivity.SetTag("messaging.source_message_id", originalId?.ToString());
-                    }
-                }
-
-                W3CTraceContextProvider.InjectTraceContext(forwardMessage.Headers, Message);
-
                 await Delivery.Forward(label, payload);
-                
-                consumerActivityManager.CompleteProducerActivity();
                 consumerActivityManager.CompleteConsumerActivity();
             }
             catch (Exception ex)
             {
-                consumerActivityManager.SetProducerActivityError(ex);
-                consumerActivityManager.CompleteProducerActivity();
+                consumerActivityManager.SetConsumerActivityError(ex);
                 consumerActivityManager.CompleteConsumerActivity();
                 throw;
             }
@@ -216,7 +176,7 @@ namespace Contour.Receiving
             try
             {
                 var replyActivity = consumerActivityManager.StartProducerActivity(Message, replyMessage, 
-                    $"Reply to {Delivery.Label.Name}");
+                    $"Reply to request from queue '{Delivery.Label.Name}'");
                 
                 if (replyActivity != null)
                 {
