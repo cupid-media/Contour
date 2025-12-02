@@ -41,7 +41,7 @@ jobs:
 
       - name: Detect changes
         id: check
-        run: ./.github/scripts/detect_changes.sh
+        run: bash ./.github/scripts/detect_changes.sh
         env:
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
           PROJECT_FILE: ${{ env.PROJECT_FILE }}
@@ -69,7 +69,7 @@ jobs:
 
       - name: Compute and (optionally) commit new version
         id: version
-        run: ./.github/scripts/read_version.sh publish
+        run: bash ./.github/scripts/read_version.sh publish
         env:
           PROJECT_FILE: ${{ env.PROJECT_FILE }}
 
