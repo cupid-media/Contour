@@ -2,7 +2,7 @@
 set -euo pipefail
 
 DEFAULT_BRANCH=${DEFAULT_BRANCH:-main}
-PROJECT_FILE=${PROJECT_FILE:-./src/Gems.Logging.Helpers.csproj}
+PROJECT_FILE=${PROJECT_FILE:-./Sources/Contour/Contour.csproj}
 PROJECT_FILE_STRIPPED=${PROJECT_FILE#./}
 EVENT_NAME=${GITHUB_EVENT_NAME:-push}
 

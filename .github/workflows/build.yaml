@@ -13,8 +13,8 @@ concurrency:
 
 env:
   DOTNET_VERSION: '8.0.x'
-  PROJECT_PATH: './src'
-  PROJECT_FILE: './src/Gems.Logging.Helpers.csproj'
+  PROJECT_PATH: './Sources'
+  PROJECT_FILE: './Sources/Contour/Contour.csproj'
 
 defaults:
   run:
