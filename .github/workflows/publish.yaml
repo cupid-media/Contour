@@ -90,7 +90,7 @@ jobs:
           fi
           echo "csproj version: ${CURRENT_VERSION}"
           set +e
-          ./.github/scripts/check_version_bumped.sh nuget-feed "${CURRENT_VERSION}"
+          bash ./.github/scripts/check_version_bumped.sh nuget-feed "${CURRENT_VERSION}"
           STATUS=$?
           set -e
           echo "${STATUS}" > version_check_status.txt

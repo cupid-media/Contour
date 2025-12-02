@@ -76,7 +76,7 @@ jobs:
           CURRENT_VERSION="${{ steps.read.outputs.version }}"
           echo "csproj version: ${CURRENT_VERSION}"
           set +e
-          ./.github/scripts/check_version_bumped.sh github-release "${CURRENT_VERSION}"
+          bash ./.github/scripts/check_version_bumped.sh github-release "${CURRENT_VERSION}"
           STATUS=$?
           set -e
           echo "${STATUS}" > version_check_status.txt
