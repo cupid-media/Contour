@@ -1,0 +1,282 @@
+name: Build and Test
+
+on:
+  push:
+    branches:
+      - "**"
+  pull_request:
+    branches: [ main ]
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  DOTNET_VERSION: '8.0.x'
+  PROJECT_PATH: './src'
+  PROJECT_FILE: './src/Gems.Logging.Helpers.csproj'
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  detect-changes:
+    runs-on: ubuntu-latest
+    outputs:
+      source_changed: ${{ steps.check.outputs.source_changed }}
+      docs_changed: ${{ steps.check.outputs.docs_changed }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Detect changes
+        id: check
+        run: ./.github/scripts/detect_changes.sh
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          PROJECT_FILE: ${{ env.PROJECT_FILE }}
+          EVENT_BEFORE: ${{ github.event.before }}
+          PULL_BASE_SHA: ${{ github.event.pull_request.base.sha || '' }}
+          PULL_HEAD_SHA: ${{ github.event.pull_request.head.sha || '' }}
+
+  version:
+    runs-on: ubuntu-latest
+    needs: detect-changes
+    env:
+      FAILURE_LOG: ${{ github.workspace }}/version-failure.log
+    outputs:
+      new_version: ${{ steps.read.outputs.version }}
+      effective_version: ${{ steps.read.outputs.version }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Initialize failure log
+        run: rm -f "$FAILURE_LOG"
+
+      - name: Read version metadata
+        id: read
+        run: ./.github/scripts/read_version.sh
+        env:
+          PROJECT_FILE: ${{ env.PROJECT_FILE }}
+
+      - name: Check version bump
+        if: needs.detect-changes.outputs.source_changed == 'true'
+        env:
+          GITHUB_PUBLISH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        continue-on-error: true
+        run: |
+          set -uo pipefail
+          exec > >(tee -a "$FAILURE_LOG") 2>&1
+          CURRENT_VERSION="${{ steps.read.outputs.version }}"
+          echo "csproj version: ${CURRENT_VERSION}"
+          set +e
+          ./.github/scripts/check_version_bumped.sh github-release "${CURRENT_VERSION}"
+          STATUS=$?
+          set -e
+          echo "${STATUS}" > version_check_status.txt
+          exit "${STATUS}"
+
+      - name: Capture version failure snippet
+        id: capture_version_snippet
+        if: needs.detect-changes.outputs.source_changed == 'true'
+        run: |
+          STATUS=$(cat version_check_status.txt 2>/dev/null || echo 0)
+          if [[ "${STATUS}" != "0" ]]; then
+            tail -n 80 "$FAILURE_LOG" > version_failure_snippet.txt || echo "No version log output" > version_failure_snippet.txt
+            echo "has_failure=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_failure=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Upload version failure snippet
+        if: steps.capture_version_snippet.outputs.has_failure == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: version-failure-snippet
+          path: version_failure_snippet.txt
+          retention-days: 7
+
+      - name: Enforce version bump result
+        if: needs.detect-changes.outputs.source_changed == 'true'
+        run: |
+          STATUS=$(cat version_check_status.txt 2>/dev/null || echo 0)
+          if [[ "${STATUS}" != "0" ]]; then
+            echo "Version bump enforcement failed (status ${STATUS})."
+            exit "${STATUS}"
+          fi
+
+  build:
+    runs-on: ubuntu-latest
+    needs: [detect-changes, version]
+    if: always() && (needs.detect-changes.outputs.source_changed == 'true' || needs.version.outputs.new_version != '' || needs.version.outputs.effective_version != '')
+    env:
+      FAILURE_LOG: ${{ github.workspace }}/build-failure.log
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Initialize failure log
+        run: rm -f "$FAILURE_LOG"
+
+      - name: Setup .NET (with cache)
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+          cache: true
+          cache-dependency-path: |
+            **/*.csproj
+            **/global.json
+            **/packages.lock.json
+
+      - name: Determine effective version
+        id: eff
+        run: |
+          if [[ -n "${{ needs.version.outputs.effective_version }}" ]]; then
+            echo "version=${{ needs.version.outputs.effective_version }}" >> "$GITHUB_OUTPUT"
+          elif [[ -n "${{ needs.version.outputs.new_version }}" ]]; then
+            echo "version=${{ needs.version.outputs.new_version }}" >> "$GITHUB_OUTPUT"
+          else
+            V=$(grep -oP '<Version>\K[^<]+' "${{ env.PROJECT_FILE }}")
+            echo "version=${V}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Require release version for main PRs
+        if: ${{ github.event_name == 'pull_request' && github.base_ref == 'main' }}
+        run: |
+          VERSION="${{ steps.eff.outputs.version }}"
+          if [[ ! "${VERSION}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Pull requests into main must bump to a release version (x.y.z); current version is ${VERSION}."
+            exit 1
+          fi
+
+      - name: Get version
+        id: version
+        run: |
+          VERSION=$(grep -oP '<Version>\K[^<]+' "${{ env.PROJECT_FILE }}")
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "Building version: ${VERSION}"
+
+      - name: Restore
+        working-directory: ${{ env.PROJECT_PATH }}
+        run: |
+          set -euo pipefail
+          dotnet restore |& tee -a "$FAILURE_LOG"
+
+      - name: Build
+        working-directory: ${{ env.PROJECT_PATH }}
+        run: |
+          set -euo pipefail
+          dotnet build --configuration Release --no-restore |& tee -a "$FAILURE_LOG"
+
+      - name: Test
+        if: false
+        working-directory: ${{ env.PROJECT_PATH }}
+        run: |
+          set -euo pipefail
+          dotnet test --configuration Release --no-build --verbosity normal |& tee -a "$FAILURE_LOG"
+
+      - name: Pack (validation only)
+        working-directory: ${{ env.PROJECT_PATH }}
+        run: |
+          set -euo pipefail
+          VERSION="${{ steps.version.outputs.version }}"
+          dotnet pack \
+            --configuration Release \
+            --no-build \
+            -p:Version="${VERSION}" \
+            -p:PackageVersion="${VERSION}" \
+            -p:IncludeSymbols=true \
+            -p:SymbolPackageFormat=snupkg \
+            --output ./nupkgs |& tee -a "$FAILURE_LOG"
+
+          echo "Created packages:"
+          ls -la ./nupkgs |& tee -a "$FAILURE_LOG"
+
+      - name: Capture failure snippet
+        if: failure()
+        run: |
+          tail -n 80 "$FAILURE_LOG" > build_failure_snippet.txt || echo "No build log output" > build_failure_snippet.txt
+
+      - name: Upload failure snippet
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-failure-snippet
+          path: build_failure_snippet.txt
+          retention-days: 7
+
+  summary:
+    runs-on: ubuntu-latest
+    needs: [detect-changes, version, build]
+    if: always()
+    steps:
+      - name: Download version failure snippet
+        if: needs.version.result == 'failure'
+        uses: actions/download-artifact@v4
+        with:
+          name: version-failure-snippet
+          path: diagnostics/version
+
+      - name: Download build failure snippet
+        if: needs.build.result == 'failure'
+        uses: actions/download-artifact@v4
+        with:
+          name: build-failure-snippet
+          path: diagnostics/build
+
+      - name: Generate summary
+        run: |
+          echo "## Build Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Property | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|----------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Repository | ${{ github.repository }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Branch | ${{ github.ref_name }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Commit | \`${{ github.sha }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Trigger | ${{ github.event_name }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Source Changes | $([[ '${{ needs.detect-changes.outputs.source_changed }}' == 'true' ]] && echo 'Modified' || echo 'No changes') |" >> $GITHUB_STEP_SUMMARY
+          echo "| Documentation | $([[ '${{ needs.detect-changes.outputs.docs_changed }}' == 'true' ]] && echo 'Updated' || echo 'No changes') |" >> $GITHUB_STEP_SUMMARY
+          echo "| Version Job | ${{ needs.version.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Build Status | ${{ needs.build.result }} |" >> $GITHUB_STEP_SUMMARY
+
+          VERSION_JOB_RESULT="${{ needs.version.result }}"
+          BUILD_RESULT="${{ needs.build.result }}"
+          if [[ ( -n "${VERSION_JOB_RESULT}" && "${VERSION_JOB_RESULT}" != "success" ) || ( -n "${BUILD_RESULT}" && "${BUILD_RESULT}" != "success" ) ]]; then
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "### Failure Details" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            if [[ -n "${VERSION_JOB_RESULT}" && "${VERSION_JOB_RESULT}" != "success" ]]; then
+              echo "- Version job concluded with status: \`${VERSION_JOB_RESULT}\`." >> $GITHUB_STEP_SUMMARY
+              VERSION_SNIPPET="diagnostics/version/version_failure_snippet.txt"
+              if [[ -s "${VERSION_SNIPPET}" ]]; then
+                echo "" >> $GITHUB_STEP_SUMMARY
+                echo "<details><summary>Version check excerpt</summary>" >> $GITHUB_STEP_SUMMARY
+                echo "" >> $GITHUB_STEP_SUMMARY
+                echo '```' >> $GITHUB_STEP_SUMMARY
+                cat "${VERSION_SNIPPET}" >> $GITHUB_STEP_SUMMARY
+                echo '```' >> $GITHUB_STEP_SUMMARY
+                echo "</details>" >> $GITHUB_STEP_SUMMARY
+              fi
+            fi
+            if [[ -n "${BUILD_RESULT}" && "${BUILD_RESULT}" != "success" ]]; then
+              echo "- Build job concluded with status: \`${BUILD_RESULT}\`." >> $GITHUB_STEP_SUMMARY
+              SNIPPET_PATH="diagnostics/build/build_failure_snippet.txt"
+              if [[ -s "${SNIPPET_PATH}" ]]; then
+                echo "" >> $GITHUB_STEP_SUMMARY
+                echo "<details><summary>Build log excerpt</summary>" >> $GITHUB_STEP_SUMMARY
+                echo "" >> $GITHUB_STEP_SUMMARY
+                echo '```' >> $GITHUB_STEP_SUMMARY
+                cat "${SNIPPET_PATH}" >> $GITHUB_STEP_SUMMARY
+                echo '```' >> $GITHUB_STEP_SUMMARY
+                echo "</details>" >> $GITHUB_STEP_SUMMARY
+              fi
+            fi
+          fi
