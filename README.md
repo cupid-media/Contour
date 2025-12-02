@@ -2,7 +2,6 @@
 ========
 
 ![Contour status](https://ci.appveyor.com/api/projects/status/github/sdventures/contour?branch=master&svg=true)
-[![NuGet Status](http://img.shields.io/nuget/v/Contour.svg?style=flat)](https://www.nuget.org/packages/Contour/)
 
 ## About
 
