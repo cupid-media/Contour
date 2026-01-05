@@ -48,7 +48,7 @@ namespace Contour.Tracing
         /// <param name="producedMessage">The outgoing message</param>
         /// <param name="operationName">The operation name for the activity</param>
         /// <returns>The started producer activity or null if not enabled</returns>
-        public Activity StartProducerActivity(IMessage parentMessage, IMessage producedMessage, string operationName = "produce")
+        public Activity StartProducerActivity(IMessage producedMessage, string operationName = "produce")
         {
             if (disposed)
                 throw new ObjectDisposedException(nameof(ActivityManager));
@@ -72,33 +72,33 @@ namespace Contour.Tracing
         }
 
         /// <summary>
-        /// Completes the consumer activity with the specified status
+        /// Completes the consumer
         /// </summary>
-        /// <param name="status">The activity status</param>
-        /// <param name="statusDescription">Optional status description</param>
-        public void CompleteConsumerActivity(ActivityStatusCode status = ActivityStatusCode.Ok, string statusDescription = null)
+        public void CompleteConsumerActivity()
         {
-            if (consumerActivity != null)
-            {
-                consumerActivity.SetStatus(status, statusDescription);
-                consumerActivity.Dispose();
-                consumerActivity = null;
-            }
+            if (consumerActivity == null) 
+                return;
+            
+            if (consumerActivity.Status == ActivityStatusCode.Unset)
+                consumerActivity.SetStatus(ActivityStatusCode.Ok);
+                
+            consumerActivity.Dispose();
+            consumerActivity = null;
         }
 
         /// <summary>
-        /// Completes the producer activity with the specified status
+        /// Completes the producer activity
         /// </summary>
-        /// <param name="status">The activity status</param>
-        /// <param name="statusDescription">Optional status description</param>
-        public void CompleteProducerActivity(ActivityStatusCode status = ActivityStatusCode.Ok, string statusDescription = null)
+        public void CompleteProducerActivity()
         {
-            if (producerActivity != null)
-            {
-                producerActivity.SetStatus(status, statusDescription);
-                producerActivity.Dispose();
-                producerActivity = null;
-            }
+            if (producerActivity == null) 
+                return;
+            
+            if (producerActivity.Status == ActivityStatusCode.Unset)
+                producerActivity.SetStatus(ActivityStatusCode.Ok);
+                
+            producerActivity.Dispose();
+            producerActivity = null;
         }
 
         /// <summary>

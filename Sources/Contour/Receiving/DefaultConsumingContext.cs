@@ -175,7 +175,7 @@ namespace Contour.Receiving
             
             try
             {
-                var replyActivity = consumerActivityManager.StartProducerActivity(Message, replyMessage, 
+                var replyActivity = consumerActivityManager.StartProducerActivity(replyMessage, 
                     $"Reply to request from queue '{Delivery.Label.Name}'");
                 
                 if (replyActivity != null)

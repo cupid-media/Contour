@@ -19,3 +19,4 @@ TestResults.xml
 StyleCop.Cache
 *.csproj.user
 /Sources/Contour/Properties/launchSettings.json
+nuget.config
