@@ -9,7 +9,6 @@
     using Receiving;
     using Topology;
     using global::RabbitMQ.Client;
-    using System.Diagnostics;
 
     /// <summary>
     /// The rabbit channel.
@@ -299,20 +298,6 @@
 
             DiagnosticProps.Store(DiagnosticProps.Names.LastPublishAttemptConnectionString, this.ConnectionString);
 
-            var activity = Activity.Current;
-            if (activity != null)
-            {
-                activity.SetTag("messaging.rabbitmq.exchange", nativeRoute.Exchange ?? string.Empty);
-                if (!string.IsNullOrEmpty(nativeRoute.RoutingKey))
-                {
-                    activity.SetTag("messaging.rabbitmq.routing_key", nativeRoute.RoutingKey);
-                }
-                var sanitized = TryGetSanitizedBrokerUrl(this.ConnectionString);
-                if (!string.IsNullOrEmpty(sanitized))
-                {
-                    activity.SetTag("messaging.url", sanitized);
-                }
-            }
 
             this.SafeNativeInvoke(n => n.BasicPublish(nativeRoute.Exchange, nativeRoute.RoutingKey, false, props, body));
         }

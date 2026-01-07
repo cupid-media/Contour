@@ -3,7 +3,6 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.Text;
 using Contour.Sending;
-using System.Diagnostics;
 
 namespace Contour.Tracing
 {
@@ -13,12 +12,8 @@ namespace Contour.Tracing
     public static class W3CTraceContextProvider
     {
         /// <summary>
-        /// Extracts parent ActivityContext from message headers for the consuming application
+        /// Extracts W3C trace context (traceparent and tracestate) from message headers.
         /// </summary>
-        /// <param name="message">Incoming message with potential trace context</param>
-        /// <param name="traceParent">Extracted traceparent header value</param>
-        /// <param name="traceState">Extracted tracestate header value</param>
-        /// <returns>True if valid trace context was extracted</returns>
         public static bool TryExtractTraceContext(IMessage message, out string traceParent, out string traceState)
         {
             traceParent = null;
@@ -27,7 +22,6 @@ namespace Contour.Tracing
             if (!TryGetTraceParent(message, out traceParent))
                 return false;
 
-            // Also extract tracestate if available
             if (message.Headers.TryGetValue(Headers.TraceState, out var traceStateObj))
             {
                 traceState = traceStateObj as string ?? Encoding.UTF8.GetString((byte[])traceStateObj);
@@ -37,11 +31,9 @@ namespace Contour.Tracing
         }
 
         /// <summary>
-        /// Copies trace context from current activity or source message to outgoing message headers, 
-        /// generating a new span ID for the outgoing message
+        /// Copies trace context from the source message into outgoing headers.
+        /// Creates a new span id when reusing an existing traceparent.
         /// </summary>
-        /// <param name="headers">Message headers to inject trace context into</param>
-        /// <param name="sourceMessage">Source message to copy trace context from if no current activity</param>
         public static void InjectTraceContext(IDictionary<string, object> headers, IMessage sourceMessage)
         {
             if (headers == null)
@@ -49,29 +41,11 @@ namespace Contour.Tracing
 
             try
             {
-                var currentActivity = Activity.Current;
-                
-                // Prefer current activity context if available
-                if (currentActivity != null && !string.IsNullOrEmpty(currentActivity.Id))
-                {
-                    // Use current activity's trace context (already in W3C format)
-                    headers[Headers.TraceParent] = currentActivity.Id;
-                    
-                    if (!string.IsNullOrEmpty(currentActivity.TraceStateString))
-                    {
-                        headers[Headers.TraceState] = currentActivity.TraceStateString;
-                    }
-                    return;
-                }
-
-                // Fallback to copying from source message if no current activity
                 if (sourceMessage?.Headers == null)
                     return;
 
-                // Copy traceparent with new span ID from source message
                 if (TryGetTraceParent(sourceMessage, out var traceParent))
                 {
-                    // Parse and create new span for the outgoing message
                     if (TryParseW3CTraceParent(traceParent, out var traceId, out var _, out var traceFlags))
                     {
                         var newSpanId = GenerateSpanId();
@@ -80,12 +54,10 @@ namespace Contour.Tracing
                     }
                     else
                     {
-                        // If parsing fails, copy as-is
                         headers[Headers.TraceParent] = traceParent;
                     }
                 }
 
-                // Copy tracestate from source message
                 if (sourceMessage.Headers.TryGetValue(Headers.TraceState, out var traceStateObj))
                 {
                     var traceState = traceStateObj as string ?? Encoding.UTF8.GetString((byte[])traceStateObj);
@@ -94,7 +66,7 @@ namespace Contour.Tracing
             }
             catch (Exception)
             {
-                // Don't break message sending if trace context copying fails
+                // Swallow to avoid impacting message flow
             }
         }
 
@@ -134,17 +106,14 @@ namespace Contour.Tracing
             if (parts.Length != 4 || parts[0] != "00")
                 return false;
 
-            // Validate trace ID (32 hex chars)
             if (parts[1].Length != 32 || !IsValidHexString(parts[1]))
                 return false;
             traceId = parts[1];
 
-            // Validate span ID (16 hex chars)  
             if (parts[2].Length != 16 || !IsValidHexString(parts[2]))
                 return false;
             spanId = parts[2];
 
-            // Validate trace flags (2 hex chars)
             if (parts[3].Length != 2 || !byte.TryParse(parts[3], NumberStyles.HexNumber, null, out traceFlags))
                 return false;
 

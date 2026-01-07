@@ -12,8 +12,6 @@ namespace Contour.Receiving
     internal class DefaultConsumingContext<T> : IConsumingContext<T>, IDeliveryContext
         where T : class
     {
-        private readonly ActivityManager consumerActivityManager = new();
-
         /// <summary>
         /// Initializes a new instance of the <see cref="DefaultConsumingContext{T}"/> class. 
         /// </summary>
@@ -31,7 +29,6 @@ namespace Contour.Receiving
             Message = message;
             Delivery = delivery;
             Bus = busContext;
-            consumerActivityManager.StartConsumerActivity(message, $"Process message from queue '{Delivery.Label.Name}'");
         }
 
         /// <summary>
@@ -121,12 +118,9 @@ namespace Contour.Receiving
             try
             {
                 Delivery.Forward(label, payload);
-                consumerActivityManager.CompleteConsumerActivity();
             }
-            catch (Exception ex)
+            catch (Exception)
             {
-                consumerActivityManager.SetConsumerActivityError(ex);
-                consumerActivityManager.CompleteConsumerActivity();
                 throw;
             }
         }
@@ -139,12 +133,9 @@ namespace Contour.Receiving
             try
             {
                 await Delivery.Forward(label, payload);
-                consumerActivityManager.CompleteConsumerActivity();
             }
-            catch (Exception ex)
+            catch (Exception)
             {
-                consumerActivityManager.SetConsumerActivityError(ex);
-                consumerActivityManager.CompleteConsumerActivity();
                 throw;
             }
         }
@@ -160,7 +151,6 @@ namespace Contour.Receiving
         {
             if (!Delivery.CanReply)
             {
-                consumerActivityManager.CompleteConsumerActivity();
                 return;
             }
             
@@ -175,30 +165,12 @@ namespace Contour.Receiving
             
             try
             {
-                var replyActivity = consumerActivityManager.StartProducerActivity(replyMessage, 
-                    $"Reply to request from queue '{Delivery.Label.Name}'");
-                
-                if (replyActivity != null)
-                {
-                    replyActivity.SetTag("messaging.operation", "reply");
-                    if (Message.Headers.TryGetValue(Headers.CorrelationId, out var correlationId))
-                    {
-                        replyActivity.SetTag("messaging.conversation_id", correlationId?.ToString());
-                    }
-                }
-
                 W3CTraceContextProvider.InjectTraceContext(replyHeaders, Message);
 
                 Delivery.ReplyWith(replyMessage);
-                
-                consumerActivityManager.CompleteProducerActivity();
-                consumerActivityManager.CompleteConsumerActivity();
             }
-            catch (Exception ex)
+            catch
             {
-                consumerActivityManager.SetProducerActivityError(ex);
-                consumerActivityManager.CompleteProducerActivity();
-                consumerActivityManager.CompleteConsumerActivity();
                 throw;
             }
         }
@@ -211,7 +183,6 @@ namespace Contour.Receiving
         /// </param>
         public void Reject(bool requeue)
         {
-            consumerActivityManager.CompleteConsumerActivity();
             Delivery.Reject(requeue);
         }
     }

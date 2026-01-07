@@ -165,27 +165,6 @@ namespace Contour.Transport.RabbitMQ.Internal
 
             var context = new DefaultConsumingContext<T>(this.busContext, message, this);
 
-            var activity = Activity.Current;
-            if (activity != null)
-            {
-                var exchange = this.Args.Exchange ?? string.Empty;
-                if (!string.IsNullOrEmpty(exchange))
-                {
-                    activity.SetTag("messaging.rabbitmq.exchange", exchange);
-                }
-
-                if (!string.IsNullOrEmpty(this.Args.RoutingKey))
-                {
-                    activity.SetTag("messaging.rabbitmq.routing_key", this.Args.RoutingKey);
-                }
-
-                var sanitized = TryGetSanitizedBrokerUrl(this.Channel.ConnectionString);
-                if (!string.IsNullOrEmpty(sanitized))
-                {
-                    activity.SetTag("messaging.url", sanitized);
-                }
-            }
-
             return context;
         }
 

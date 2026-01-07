@@ -5,63 +5,18 @@ using Contour.Tracing;
 namespace Contour.Filters
 {
     /// <summary>
-    /// Message exchange filter that handles W3C trace context header propagation and Activity management
+    /// Message exchange filter that handles W3C trace context header propagation.
     /// </summary>
     public class W3CTraceContextFilter : IMessageExchangeFilter
     {
         public async Task<MessageExchange> Process(MessageExchange exchange, MessageExchangeFilterInvoker invoker, string connectionKey)
         {
-            // Start producer activity for outgoing messages
-            if (exchange.Out != null)
+            if (exchange.Out?.Headers != null)
             {
-                var forwarded = false;
-                if (exchange.Out.Headers != null 
-                    && exchange.Out.Headers.TryGetValue(Headers.Forwarded, out var fwdObj))
-                {
-                    if (fwdObj is true)
-                    {
-                        forwarded = true;
-                    }
-                }
-
-                var actionString = forwarded ? "Forward message" : (exchange.IsRequest ? "Send request" : "Emit message");
-                exchange.ActivityManager.StartProducerActivity(exchange.Out,
-                    $"{actionString} to queue '{exchange.Out.Label.Name}'");
-                // Inject trace context into outgoing message headers
-                if (exchange.Out.Headers != null)
-                {
-                    W3CTraceContextProvider.InjectTraceContext(exchange.Out.Headers, exchange.In);
-                }
+                W3CTraceContextProvider.InjectTraceContext(exchange.Out.Headers, exchange.In);
             }
 
-            try
-            {
-                // Continue with filter chain
-                var result = await invoker.Continue(exchange, connectionKey);
-                
-                // Complete activities with success status
-                exchange.ActivityManager.CompleteConsumerActivity();
-                exchange.ActivityManager.CompleteProducerActivity();
-                
-                return result;
-            }
-            catch (Exception ex)
-            {
-                // Set error status on activities before completing them
-                if (exchange.In != null)
-                {
-                    exchange.ActivityManager.SetConsumerActivityError(ex);
-                    exchange.ActivityManager.CompleteConsumerActivity();
-                }
-                
-                if (exchange.Out != null)
-                {
-                    exchange.ActivityManager.SetProducerActivityError(ex);
-                    exchange.ActivityManager.CompleteProducerActivity();
-                }
-                
-                throw;
-            }
+            return await invoker.Continue(exchange, connectionKey);
         }
 
         public async Task<MessageExchange> Process(MessageExchange exchange, MessageExchangeFilterInvoker invoker)
