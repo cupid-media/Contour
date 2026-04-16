@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.Diagnostics;
@@ -197,7 +197,7 @@ namespace Contour.Transport.RabbitMQ.Internal
         {
             try
             {
-                this.logger.Trace($"Starting producer [{this.GetHashCode()}] of [{this.Label}]");
+                this.logger.Info($"Starting producer of [{this.Label}] at [{this.BrokerUrl}], hasCallback={this.CallbackListener != null}, confirmations={this.ConfirmationIsRequired}");
                 this.slimLock.EnterWriteLock();
                 
                 this.cancellationTokenSource = new CancellationTokenSource();
@@ -215,7 +215,7 @@ namespace Contour.Transport.RabbitMQ.Internal
 
                 this.CallbackListener?.StartConsuming();
 
-                this.logger.Trace($"Producer of [{this.Label}] started successfully");
+                this.logger.Info($"Producer of [{this.Label}] at [{this.BrokerUrl}] started successfully");
             }
             finally
             {

@@ -81,10 +81,11 @@ namespace Contour.Transport.RabbitMQ.Internal
                 return;
             }
 
-            this.logger.Trace(m => m("Starting sender of [{0}]", this.Configuration.Label));
+            this.logger.Info($"Starting sender of [{this.Configuration.Label}], URLs=[{string.Join(",", this.senderOptions.RabbitConnectionString)}]");
 
             this.StartProducers();
             this.IsStarted = true;
+            this.logger.Info($"Sender of [{this.Configuration.Label}] started, producers={this.producers.Count}");
         }
 
         /// <summary>
@@ -97,7 +98,7 @@ namespace Contour.Transport.RabbitMQ.Internal
                 return;
             }
 
-            this.logger.Trace(m => m("Stopping sender of [{0}]", this.Configuration.Label));
+            this.logger.Info($"Stopping sender of [{this.Configuration.Label}]");
 
             this.StopProducers();
             this.faultTolerantProducer.Dispose();
@@ -199,7 +200,7 @@ namespace Contour.Transport.RabbitMQ.Internal
 
             var source = new CancellationTokenSource();
             var connection = this.connectionPool.Get(url, reuseConnection, source.Token);
-            this.logger.Trace($"Using connection [{connection.Id}] at URL=[{url}] to resolve a producer");
+            this.logger.Info($"Producer of [{this.Configuration.Label}]: using connection [{connection.Id}] at [{url}], reuseConnection={reuseConnection}, requiresCallback={this.Configuration.RequiresCallback}");
 
             using (var topologyBuilder = new TopologyBuilder(connection))
             {

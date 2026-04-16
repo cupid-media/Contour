@@ -100,10 +100,11 @@ namespace Contour.Transport.RabbitMQ.Internal
                 return;
             }
 
-            this.logger.Trace(m => m("Starting receiver of [{0}].", this.Configuration.Label));
+            this.logger.Info($"Starting receiver of [{this.Configuration.Label}], URLs=[{string.Join(",", this.receiverOptions.RabbitConnectionString)}]");
 
             this.StartListeners();
             this.IsStarted = true;
+            this.logger.Info($"Receiver of [{this.Configuration.Label}] started, listeners={this.listeners.Count}");
         }
 
         /// <summary>
@@ -116,7 +117,7 @@ namespace Contour.Transport.RabbitMQ.Internal
                 return;
             }
 
-            this.logger.Trace(m => m("Stopping receiver of [{0}].", this.Configuration.Label));
+            this.logger.Info($"Stopping receiver of [{this.Configuration.Label}]");
 
             this.StopListeners();
             this.IsStarted = false;
@@ -287,7 +288,7 @@ namespace Contour.Transport.RabbitMQ.Internal
 
             var source = new CancellationTokenSource();
             var connection = this.connectionPool.Get(url, reuseConnection, source.Token);
-            this.logger.Trace($"Using connection [{connection.Id}] at URL=[{url}] to resolve a listener");
+            this.logger.Info($"Listener of [{this.Configuration.Label}]: using connection [{connection.Id}] at [{url}], reuseConnection={reuseConnection}");
 
             using (var topologyBuilder = new TopologyBuilder(connection))
             {

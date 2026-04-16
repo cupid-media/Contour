@@ -5,6 +5,7 @@
     using System.IO;
     using System.Threading;
     using Common.Logging;
+    using Contour.Helpers;
     using Helpers;
     using Receiving;
     using Topology;
@@ -383,11 +384,12 @@
 
                 this.SafeNativeInvoke(n => consumerTag = n.BasicConsume(listeningSource.Address, !requireAccept, consumer));
 
+                this.logger.Info($"Started consuming on queue [{listeningSource.Address}], connection [{this.ConnectionId}] at [{ConnectionStringHelper.Sanitize(this.ConnectionString)}], tag [{consumerTag}], autoAck={!requireAccept}");
                 return consumerTag;
             }
             catch (Exception e)
             {
-                this.logger.Error(m => m("Failed start consuming on channel."), e);
+                this.logger.Error($"Failed to start consuming on queue [{listeningSource.Address}], connection [{this.ConnectionId}] at [{ConnectionStringHelper.Sanitize(this.ConnectionString)}]", e);
                 throw;
             }
         }
@@ -412,7 +414,7 @@
 
         private void OnModelShutdown(object sender, ShutdownEventArgs args)
         {
-            this.logger.Trace($"Channel is closed due to '{args.ReplyText}'");
+            this.logger.Warn($"Channel SHUTDOWN on connection [{this.ConnectionId}] at [{ConnectionStringHelper.Sanitize(this.ConnectionString)}]: {args.ReplyText} (code={args.ReplyCode}, initiator={args.Initiator})");
             this.Shutdown(this, args);
         }
 

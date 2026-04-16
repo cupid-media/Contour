@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -8,6 +8,7 @@ using System.Threading;
 using System.Threading.Tasks;
 
 using Common.Logging;
+using Contour.Helpers;
 
 using RabbitMQ.Client;
 using RabbitMQ.Client.Exceptions;
@@ -65,17 +66,19 @@ namespace Contour.Transport.RabbitMQ.Internal
 
         public string ConnectionKey { get; }
 
+        private string SafeUrl => ConnectionStringHelper.Sanitize(this.ConnectionString);
+
         public void Open(CancellationToken token)
         {
             lock (this.syncRoot)
             {
                 if (this.connection?.IsOpen ?? false)
                 {
-                    this.logger.Trace($"Connection [{this.Id}] is already open");
+                    this.logger.Info($"Connection [{this.Id}] is already open at [{this.SafeUrl}]");
                     return;
                 }
 
-                this.logger.Info($"Connecting to RabbitMQ using [{this.ConnectionString}]");
+                this.logger.Info($"Connecting to RabbitMQ using [{this.SafeUrl}]");
 
                 var retryCount = 0;
                 while (true)
@@ -106,7 +109,7 @@ namespace Contour.Transport.RabbitMQ.Internal
 
                         var secondsToRetry = Math.Min(10, retryCount);
 
-                        this.logger.Warn(m => m("Unable to connect to RabbitMQ on connection string: [{1}]. Retrying in {0} seconds...", secondsToRetry, this.ConnectionString), ex);
+                        this.logger.Warn($"Unable to connect to RabbitMQ [{this.SafeUrl}], attempt #{retryCount}, retrying in {secondsToRetry}s: {ex.Message}", ex);
                         
                         Thread.Sleep(TimeSpan.FromSeconds(secondsToRetry));
                         retryCount++;
@@ -148,11 +151,12 @@ namespace Contour.Transport.RabbitMQ.Internal
                     {
                         var model = this.connection.CreateModel();
                         var channel = new RabbitChannel(this.Id, model, this.busContext, this.ConnectionString, this.ConnectionKey);
+                        this.logger.Info($"Channel opened on connection [{this.Id}] at [{this.SafeUrl}], channel #{model.ChannelNumber}");
                         return channel;
                     }
                     catch (Exception ex)
                     {
-                        this.logger.Error($"Failed to open a new channel on connection string: [{this.ConnectionString}] due to: {ex.Message}; retrying...", ex);
+                        this.logger.Error($"Failed to open channel on connection [{this.Id}] at [{this.SafeUrl}]: {ex.Message}; retrying...", ex);
                     }
                 }
             }
@@ -166,7 +170,7 @@ namespace Contour.Transport.RabbitMQ.Internal
                 {
                     if (this.connection.CloseReason == null)
                     {
-                        this.logger.Trace($"[{this.endpoint}]: closing connection.");
+                        this.logger.Info($"Closing connection [{this.Id}] at [{this.SafeUrl}]");
                         try
                         {
                             this.connection.Close(TimeSpan.FromMilliseconds(OperationTimeout));
@@ -213,8 +217,7 @@ namespace Contour.Transport.RabbitMQ.Internal
 
                     if (this.connection != null)
                     {
-                        this.logger.Trace(
-                            $"[{this.endpoint}]: disposing connection [{this.Id}] at [{this.connection.Endpoint}].");
+                        this.logger.Info($"Disposing connection [{this.Id}] at [{this.SafeUrl}]");
                         this.connection?.Dispose();
                         this.connection = null;
                     }
@@ -255,7 +258,7 @@ namespace Contour.Transport.RabbitMQ.Internal
             Task.Factory.StartNew(
                 () =>
                 {
-                    this.logger.Trace($"Connection [{this.Id}] has been closed due to {eventArgs.ReplyText} ({eventArgs.ReplyCode})");
+                    this.logger.Warn($"Connection [{this.Id}] at [{this.SafeUrl}] SHUTDOWN: {eventArgs.ReplyText} (code={eventArgs.ReplyCode}, initiator={eventArgs.Initiator})");
 
                     lock (this.syncRoot)
                     {

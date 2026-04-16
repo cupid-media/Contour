@@ -283,12 +283,11 @@ namespace Contour.Transport.RabbitMQ.Internal
                     return;
                 }
 
-                this.logger.InfoFormat("Starting consuming on [{0}].", this.endpoint.ListeningSource);
+                var count = (int)this.ReceiverOptions.GetParallelismLevel().Value;
+                this.logger.Info($"Starting consuming on [{this.endpoint.ListeningSource}] at [{this.BrokerUrl}], parallelismLevel={count}, labels=[{string.Join(",", this.consumers.Keys)}]");
 
                 this.cancellationTokenSource = new CancellationTokenSource();
                 this.ticketTimer = new RoughTicketTimer(TimeSpan.FromSeconds(1));
-
-                var count = (int)this.ReceiverOptions.GetParallelismLevel().Value;
                 var token = this.cancellationTokenSource.Token;
 
                 // In order to increase the performance of the listener on startup the task factory should be configured to create long running tasks. These tasks will run on dedicated threads instead of thread pool threads which may be created with delays in certain conditions. As a workaround for this condition one can set the minimum number of threads created by the pool before switching the thread creation policy. See https://stackoverflow.com/questions/22036365/newly-created-threads-using-task-factory-startnew-starts-very-slowly for details.
@@ -302,7 +301,7 @@ namespace Contour.Transport.RabbitMQ.Internal
                                 TaskScheduler.Default)));
 
                 this.isConsuming = true;
-                this.logger.Trace("Listener's workers started successfully");
+                this.logger.Info($"Listener on [{this.endpoint.ListeningSource}] at [{this.BrokerUrl}] started with {count} workers");
             }
         }
 
@@ -605,6 +604,7 @@ namespace Contour.Transport.RabbitMQ.Internal
         {
             if (this.expectations.TryRemove(correlationId, out var expectation))
             {
+                this.logger.Warn($"Response TIMEOUT for correlationId=[{correlationId}] on [{this.endpoint.ListeningSource}] at [{this.BrokerUrl}], pending expectations: {this.expectations.Count}");
                 expectation.Timeout();
             }
         }

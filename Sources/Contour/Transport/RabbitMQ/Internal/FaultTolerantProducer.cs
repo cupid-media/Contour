@@ -30,20 +30,20 @@ namespace Contour.Transport.RabbitMQ.Internal
 
             for (var count = 0; count < this.attempts; count++)
             {
-                this.logger.Trace($"Attempt to send #{count}");
-
                 try
                 {
                     var producer = connectionKey == null ? this.selector.Next() : this.selector.PickByConnectionKey(connectionKey);
+                    this.logger.Info($"Send attempt #{count + 1}/{this.attempts}: label=[{exchange.Out?.Label}], producer=[{producer.BrokerUrl}], isRequest={exchange.IsRequest}, connectionKey=[{connectionKey}]");
                     return this.TrySend(exchange, producer);
                 }
                 catch (Exception ex)
                 {
-                    this.logger.Warn($"Attempt #{count} to send a message has failed", ex);
+                    this.logger.Warn($"Send attempt #{count + 1}/{this.attempts} FAILED for label=[{exchange.Out?.Label}], connectionKey=[{connectionKey}]: {ex.Message}", ex);
                     errors.Add(ex);
                 }
             }
 
+            this.logger.Error($"All {this.attempts} send attempts exhausted for label=[{exchange.Out?.Label}], connectionKey=[{connectionKey}]");
             throw new FailoverException($"Failed to send a message after {this.attempts} attempts", new AggregateException(errors))
             {
                 Attempts = this.attempts
