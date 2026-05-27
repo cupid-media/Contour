@@ -1,6 +1,8 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Globalization;
+using System.Security.Cryptography;
 using System.Text;
 using Contour.Sending;
 
@@ -19,13 +21,8 @@ namespace Contour.Tracing
             traceParent = null;
             traceState = null;
 
-            if (!TryGetTraceParent(message, out traceParent))
+            if (!TryGetTraceContext(message?.Headers, out traceParent, out traceState))
                 return false;
-
-            if (message.Headers.TryGetValue(Headers.TraceState, out var traceStateObj))
-            {
-                traceState = traceStateObj as string ?? Encoding.UTF8.GetString((byte[])traceStateObj);
-            }
 
             return true;
         }
@@ -41,28 +38,20 @@ namespace Contour.Tracing
 
             try
             {
-                if (sourceMessage?.Headers == null)
+                if (TryInjectCurrentActivity(headers))
                     return;
 
-                if (TryGetTraceParent(sourceMessage, out var traceParent))
+                if (!TryGetTraceContext(sourceMessage?.Headers, out var traceParent, out var traceState) &&
+                    !TryGetTraceContext(headers, out traceParent, out traceState))
                 {
-                    if (TryParseW3CTraceParent(traceParent, out var traceId, out var _, out var traceFlags))
-                    {
-                        var newSpanId = GenerateSpanId();
-                        var newTraceParent = $"00-{traceId}-{newSpanId}-{traceFlags:x2}";
-                        headers[Headers.TraceParent] = newTraceParent;
-                    }
-                    else
-                    {
-                        headers[Headers.TraceParent] = traceParent;
-                    }
+                    ClearTraceContext(headers);
+                    return;
                 }
 
-                if (sourceMessage.Headers.TryGetValue(Headers.TraceState, out var traceStateObj))
-                {
-                    var traceState = traceStateObj as string ?? Encoding.UTF8.GetString((byte[])traceStateObj);
-                    headers[Headers.TraceState] = traceState;
-                }
+                TryParseW3CTraceParent(traceParent, out var traceId, out var _, out var traceFlags);
+
+                headers[Headers.TraceParent] = $"00-{traceId}-{GenerateSpanId()}-{traceFlags:x2}";
+                SetTraceState(headers, traceState);
             }
             catch (Exception)
             {
@@ -70,27 +59,42 @@ namespace Contour.Tracing
             }
         }
 
-        private static bool TryGetTraceParent(IMessage message, out string traceParent)
+        private static bool TryGetTraceContext(IDictionary<string, object> headers, out string traceParent, out string traceState)
         {
             traceParent = null;
+            traceState = null;
     
-            if (message?.Headers == null || !message.Headers.TryGetValue(Headers.TraceParent, out var traceParentObj))
+            if (!TryGetHeaderString(headers, Headers.TraceParent, out traceParent))
                 return false;
 
-            switch (traceParentObj)
+            if (!TryParseW3CTraceParent(traceParent, out var _, out var _, out var _))
+                return false;
+
+            TryGetHeaderString(headers, Headers.TraceState, out traceState);
+
+            return true;
+        }
+
+        private static bool TryGetHeaderString(IDictionary<string, object> headers, string key, out string value)
+        {
+            value = null;
+
+            if (headers == null || !headers.TryGetValue(key, out var headerValue))
+                return false;
+
+            switch (headerValue)
             {
                 case string str:
-                    traceParent = str;
+                    value = str;
                     break;
                 case byte[] bytes:
-                    traceParent = Encoding.UTF8.GetString(bytes);
+                    value = Encoding.UTF8.GetString(bytes);
                     break;
                 default:
-                    traceParent = null;
-                    break;
+                    return false;
             }
 
-            return !string.IsNullOrWhiteSpace(traceParent);
+            return !string.IsNullOrWhiteSpace(value);
         }
 
         private static bool TryParseW3CTraceParent(string traceParent, out string traceId, out string spanId, out byte traceFlags)
@@ -106,11 +110,11 @@ namespace Contour.Tracing
             if (parts.Length != 4 || parts[0] != "00")
                 return false;
 
-            if (parts[1].Length != 32 || !IsValidHexString(parts[1]))
+            if (parts[1].Length != 32 || !IsValidHexString(parts[1]) || IsAllZeros(parts[1]))
                 return false;
             traceId = parts[1];
 
-            if (parts[2].Length != 16 || !IsValidHexString(parts[2]))
+            if (parts[2].Length != 16 || !IsValidHexString(parts[2]) || IsAllZeros(parts[2]))
                 return false;
             spanId = parts[2];
 
@@ -118,6 +122,37 @@ namespace Contour.Tracing
                 return false;
 
             return true;
+        }
+
+        private static bool TryInjectCurrentActivity(IDictionary<string, object> headers)
+        {
+            var activity = Activity.Current;
+            if (activity == null ||
+                IsAllZeros(activity.TraceId.ToString()) ||
+                IsAllZeros(activity.SpanId.ToString()))
+                return false;
+
+            headers[Headers.TraceParent] = $"00-{activity.TraceId}-{activity.SpanId}-{(byte)activity.ActivityTraceFlags:x2}";
+            SetTraceState(headers, activity.TraceStateString);
+
+            return true;
+        }
+
+        private static void SetTraceState(IDictionary<string, object> headers, string traceState)
+        {
+            if (string.IsNullOrWhiteSpace(traceState))
+            {
+                headers.Remove(Headers.TraceState);
+                return;
+            }
+
+            headers[Headers.TraceState] = traceState;
+        }
+
+        private static void ClearTraceContext(IDictionary<string, object> headers)
+        {
+            headers.Remove(Headers.TraceParent);
+            headers.Remove(Headers.TraceState);
         }
 
         private static bool IsValidHexString(string hex)
@@ -130,16 +165,37 @@ namespace Contour.Tracing
             return true;
         }
 
-        private static readonly Random Random = new Random();
+        private static bool IsAllZeros(string hex)
+        {
+            foreach (var c in hex)
+            {
+                if (c != '0')
+                    return false;
+            }
+
+            return true;
+        }
 
         private static string GenerateSpanId()
         {
-            var bytes = new byte[8];
-            lock (Random)
+            return GenerateHexIdentifier(8);
+        }
+
+        private static string GenerateHexIdentifier(int byteCount)
+        {
+            var bytes = new byte[byteCount];
+            string value;
+            using (var random = RandomNumberGenerator.Create())
             {
-                Random.NextBytes(bytes);
+                do
+                {
+                    random.GetBytes(bytes);
+                    value = BitConverter.ToString(bytes).Replace("-", "").ToLowerInvariant();
+                }
+                while (IsAllZeros(value));
             }
-            return BitConverter.ToString(bytes).Replace("-", "").ToLowerInvariant();
+
+            return value;
         }
     }
 }
