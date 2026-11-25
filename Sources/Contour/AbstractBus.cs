@@ -31,6 +31,10 @@
         /// </summary>
         private readonly ILog logger = LogManager.GetLogger<AbstractBus>();
 
+        private volatile bool isConfigured;
+        private volatile bool isShuttingDown;
+        private volatile bool isStarted;
+
         /// <summary>
         /// Initializes a new instance of the <see cref="AbstractBus"/> class.
         /// </summary>
@@ -116,7 +120,11 @@
         /// <summary>
         /// Применена ли к шине конфигурация.
         /// </summary>
-        public bool IsConfigured { get; internal set; }
+        public bool IsConfigured
+        {
+            get => this.isConfigured;
+            internal set => this.isConfigured = value;
+        }
 
         /// <summary>
         /// Готова ли шина к работе.
@@ -132,12 +140,20 @@
         /// <summary>
         /// Шина находится в процессе завершения работы.
         /// </summary>
-        public bool IsShuttingDown { get; internal set; }
+        public bool IsShuttingDown
+        {
+            get => this.isShuttingDown;
+            internal set => this.isShuttingDown = value;
+        }
 
         /// <summary>
         /// Запущена ли шина.
         /// </summary>
-        public bool IsStarted { get; internal set; }
+        public bool IsStarted
+        {
+            get => this.isStarted;
+            internal set => this.isStarted = value;
+        }
 
         /// <summary>
         /// Обработчик меток сообщений.

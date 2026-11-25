@@ -1,12 +1,16 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Text;
 using System.Threading;
+using System.Threading.Tasks;
 using Contour.Configuration;
+using Contour.Receiving;
 using Contour.Sending;
 using Contour.Serialization;
 using Contour.Transport.RabbitMQ;
 using Contour.Transport.RabbitMQ.Internal;
+using Contour.Validation;
 using FluentAssertions;
 using Moq;
 using NUnit.Framework;
@@ -169,6 +173,174 @@ namespace Contour.UnitTests
 
             modelMock.Verify(m => m.BasicAck(It.IsAny<ulong>(), It.IsAny<bool>()), Times.Never);
             modelMock.Verify(m => m.BasicNack(It.IsAny<ulong>(), It.IsAny<bool>(), It.IsAny<bool>()), Times.Never);
+        }
+
+        [Test]
+        public void Producer_Stop_should_stop_callback_listener_and_cancel_pending_expectations()
+        {
+            var (producer, _, _) = CreateProducer();
+
+            var callbackListenerMock = new Mock<IListener>();
+            var pendingExpectation = new TaskCompletionSource<IMessage>(TaskCreationOptions.RunContinuationsAsynchronously);
+            callbackListenerMock
+                .Setup(l => l.StopConsuming())
+                .Callback(() => pendingExpectation.TrySetCanceled());
+
+            producer.UseCallbackListener(callbackListenerMock.Object);
+            producer.Start();
+
+            callbackListenerMock.Verify(l => l.StartConsuming(), Times.Once);
+
+            producer.Stop();
+
+            callbackListenerMock.Verify(l => l.StopConsuming(), Times.Once);
+            pendingExpectation.Task.IsCanceled.Should().BeTrue();
+        }
+
+        [Test]
+        public void Producer_Dispose_should_dispose_callback_listener()
+        {
+            var (producer, _, _) = CreateProducer();
+            var callbackListenerMock = new Mock<IListener>();
+
+            producer.UseCallbackListener(callbackListenerMock.Object);
+            producer.Start();
+            producer.Dispose();
+
+            callbackListenerMock.Verify(l => l.StopConsuming(), Times.Once);
+            callbackListenerMock.Verify(l => l.Dispose(), Times.Once);
+        }
+
+        [Test]
+        public void Producer_Stop_should_cancel_in_progress_Start_blocked_in_OpenChannel_without_deadlocking()
+        {
+            var (_, _, connectionMock) = CreateProducer();
+            var enteredOpenChannel = new ManualResetEventSlim(false);
+
+            connectionMock
+                .Setup(c => c.OpenChannel(It.IsAny<CancellationToken>()))
+                .Returns<CancellationToken>(token =>
+                {
+                    enteredOpenChannel.Set();
+                    token.WaitHandle.WaitOne(TimeSpan.FromSeconds(5));
+                    token.ThrowIfCancellationRequested();
+                    throw new TimeoutException("OpenChannel token was not cancelled by Stop()");
+                });
+
+            var routeResolver = new Mock<IRouteResolver>();
+            routeResolver
+                .Setup(r => r.Resolve(It.IsAny<IEndpoint>(), It.IsAny<MessageLabel>()))
+                .Returns(new RabbitRoute("test.exchange", string.Empty));
+
+            var producer = new Producer(
+                new Endpoint("test-endpoint"),
+                connectionMock.Object,
+                MessageLabel.From("command.test"),
+                routeResolver.Object,
+                confirmationIsRequired: false);
+
+            var startTask = Task.Run(() =>
+            {
+                try
+                {
+                    producer.Start();
+                }
+                catch (OperationCanceledException)
+                {
+                }
+            });
+
+            enteredOpenChannel.Wait(TimeSpan.FromSeconds(2)).Should().BeTrue();
+
+            var sw = Stopwatch.StartNew();
+            var stopTask = Task.Run(() => producer.Stop());
+            stopTask.Wait(TimeSpan.FromSeconds(1)).Should().BeTrue(
+                "Producer.Stop() must cancel OpenChannel token before acquiring slimLock write lock");
+            sw.Stop();
+
+            sw.Elapsed.Should().BeLessThan(TimeSpan.FromSeconds(1));
+            startTask.Wait(TimeSpan.FromSeconds(1)).Should().BeTrue();
+        }
+
+        [Test]
+        public void Producer_Publish_when_underlying_channel_is_closed_should_throw_InvalidOperationException_without_calling_BasicPublish()
+        {
+            var isOpen = true;
+            var payloadConverter = new Mock<IPayloadConverter>();
+            payloadConverter.Setup(c => c.FromObject(It.IsAny<object>())).Returns(Encoding.UTF8.GetBytes("{}"));
+            payloadConverter.SetupGet(c => c.ContentType).Returns("application/json");
+
+            var busContext = new Mock<IBusContext>();
+            busContext.SetupGet(b => b.Endpoint).Returns(new Endpoint("test-endpoint"));
+            busContext.SetupGet(b => b.MessageLabelHandler).Returns(new DefaultRabbitMessageLabelHandler());
+            busContext.SetupGet(b => b.PayloadConverter).Returns(payloadConverter.Object);
+
+            var modelMock = new Mock<IModel>();
+            modelMock.SetupGet(m => m.IsOpen).Returns(() => isOpen);
+
+            var connectionMock = new Mock<IRabbitConnection>();
+            connectionMock.SetupGet(c => c.ConnectionString).Returns("amqp://guest:guest@localhost:5672/vhost");
+            connectionMock.SetupGet(c => c.ConnectionKey).Returns("127.0.0.1:5672:vhost");
+            connectionMock.SetupGet(c => c.IsBlocked).Returns(false);
+            connectionMock
+                .Setup(c => c.OpenChannel(It.IsAny<CancellationToken>()))
+                .Returns(() => new RabbitChannel(Guid.NewGuid(), modelMock.Object, busContext.Object, "amqp://guest:guest@localhost:5672/vhost", "127.0.0.1:5672:vhost"));
+
+            var routeResolver = new Mock<IRouteResolver>();
+            routeResolver
+                .Setup(r => r.Resolve(It.IsAny<IEndpoint>(), It.IsAny<MessageLabel>()))
+                .Returns(new RabbitRoute("test.exchange", string.Empty));
+
+            var producer = new Producer(
+                new Endpoint("test-endpoint"),
+                connectionMock.Object,
+                MessageLabel.From("command.test"),
+                routeResolver.Object,
+                confirmationIsRequired: false);
+
+            producer.Start();
+
+            // Simulate underlying model closing just before OnChannelShutdown fires
+            isOpen = false;
+
+            var message = new Message(MessageLabel.From("command.test"), new Dictionary<string, object>(), new { Id = 1 });
+            Action act = () => producer.Publish(message);
+            act.Should().Throw<InvalidOperationException>();
+
+            modelMock.Verify(m => m.CreateBasicProperties(), Times.Never);
+            modelMock.Verify(
+                m => m.BasicPublish(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<bool>(), It.IsAny<IBasicProperties>(), It.IsAny<ReadOnlyMemory<byte>>()),
+                Times.Never);
+        }
+
+        [Test]
+        public void Producer_OnChannelShutdown_should_not_block_caller_thread_when_recovering_hits_slow_open_channel()
+        {
+            var (producer, modelMock, connectionMock) = CreateProducer();
+            producer.StopOnChannelShutdown = false;
+            producer.Start();
+
+            using var allowReconnect = new ManualResetEventSlim(false);
+            connectionMock
+                .Setup(c => c.OpenChannel(It.IsAny<CancellationToken>()))
+                .Returns<CancellationToken>(_ =>
+                {
+                    allowReconnect.Wait(TimeSpan.FromSeconds(5));
+                    return new RabbitChannel(Guid.NewGuid(), modelMock.Object, new Mock<IBusContext>().Object, "amqp://guest:guest@localhost:5672/vhost", "127.0.0.1:5672:vhost");
+                });
+
+            var raiseTask = Task.Run(() =>
+            {
+                modelMock.Raise(
+                    m => m.ModelShutdown += null,
+                    new ShutdownEventArgs(ShutdownInitiator.Peer, 320, "CONNECTION_FORCED"));
+            });
+
+            var returnedQuickly = raiseTask.Wait(TimeSpan.FromMilliseconds(500));
+            allowReconnect.Set();
+
+            returnedQuickly.Should().BeTrue("Producer.OnChannelShutdown must offload recovery from the AMQP I/O thread");
+            producer.Stop();
         }
     }
 }

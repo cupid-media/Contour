@@ -11,7 +11,7 @@ namespace Contour.Transport.RabbitMQ.Internal
         private readonly IProducerSelector selector;
         private readonly int attempts;
 
-        private bool disposed;
+        private volatile bool disposed;
 
         public FaultTolerantProducer(IProducerSelector selector, int maxAttempts, int maxRetryDelay, int inactivityResetDelay)
         {

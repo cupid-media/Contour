@@ -69,7 +69,9 @@ namespace Contour.Transport.RabbitMQ.Internal
         /// Признак: слушатель потребляет сообщения.
         /// </summary>
         [SuppressMessage("StyleCop.CSharp.NamingRules", "SA1305:FieldNamesMustNotUseHungarianNotation", Justification = "Reviewed. Suppression is OK here.")]
-        private bool isConsuming;
+        private volatile bool isConsuming;
+
+        private volatile bool isDisposed;
 
         /// <summary>
         /// Таймер, который отслеживает, что время ожидания ответа на запрос вышло.
@@ -113,6 +115,8 @@ namespace Contour.Transport.RabbitMQ.Internal
         }
 
         public event EventHandler<ListenerStoppedEventArgs> Stopped = (sender, args) => { };
+
+        internal TimeSpan WorkerDrainTimeout { get; set; } = TimeSpan.FromSeconds(15);
 
         /// <summary>
         /// Тип обработчика сообщений.
@@ -169,6 +173,7 @@ namespace Contour.Transport.RabbitMQ.Internal
         /// </summary>
         public void Dispose()
         {
+            this.isDisposed = true;
             this.StopConsuming();
         }
 
@@ -278,7 +283,7 @@ namespace Contour.Transport.RabbitMQ.Internal
         {
             lock (this.syncRoot)
             {
-                if (this.isConsuming)
+                if (this.isConsuming || this.isDisposed || (this.busContext as AbstractBus)?.IsShuttingDown == true)
                 {
                     return;
                 }
@@ -398,20 +403,47 @@ namespace Contour.Transport.RabbitMQ.Internal
 
                 this.cancellationTokenSource?.Cancel(false);
 
+                var allWorkersCompleted = true;
                 if (this.workers != null)
                 {
                     while (this.workers.TryTake(out var worker))
                     {
                         try
                         {
-                            worker.Wait();
-                            worker.Dispose();
+                            if (Task.CurrentId == worker.Id)
+                            {
+                                allWorkersCompleted = false;
+                                continue;
+                            }
+
+                            if (!worker.Wait(this.WorkerDrainTimeout))
+                            {
+                                allWorkersCompleted = false;
+                                this.logger.WarnFormat(
+                                    "Timed out after {0} waiting for consumer worker on [{1}] to finish.",
+                                    this.WorkerDrainTimeout,
+                                    this.endpoint.ListeningSource);
+                            }
+                            else
+                            {
+                                worker.Dispose();
+                            }
                         }
                         catch (Exception)
                         {
-                            // May catch OperationCanceledExceptions here on Task.Wait()
+                            // May catch OperationCanceledExceptions / AggregateExceptions here on Task.Wait()
+                            if (worker.IsCompleted)
+                            {
+                                worker.Dispose();
+                            }
                         }
                     }
+                }
+
+                if (allWorkersCompleted)
+                {
+                    this.cancellationTokenSource?.Dispose();
+                    this.cancellationTokenSource = null;
                 }
 
                 while (this.channels.TryTake(out var channel))
@@ -428,7 +460,13 @@ namespace Contour.Transport.RabbitMQ.Internal
                 }
 
                 this.ticketTimer?.Dispose();
-                this.expectations.Values.ForEach(e => e.Cancel());
+                foreach (var correlationId in this.expectations.Keys.ToArray())
+                {
+                    if (this.expectations.TryRemove(correlationId, out var expectation))
+                    {
+                        expectation.Cancel();
+                    }
+                }
 
                 this.Stopped(this, new ListenerStoppedEventArgs(this, reason));
                 this.logger.Trace("Listener stopped successfully");
@@ -578,18 +616,33 @@ namespace Contour.Transport.RabbitMQ.Internal
 
             if (args.Initiator != ShutdownInitiator.Application)
             {
-                if (this.StopOnChannelShutdown)
+                Task.Run(() =>
                 {
-                    this.logger.Warn("The listener is configured to be stopped on channel failure");
-                    this.InternalStop(OperationStopReason.Terminate);
-                }
-                else
-                {
-                    this.logger.Warn("The underlying channel has been closed, recovering the listener...");
+                    if (this.isDisposed)
+                    {
+                        return;
+                    }
 
-                    this.StopConsuming();
-                    this.StartConsuming();
-                }
+                    if (this.StopOnChannelShutdown)
+                    {
+                        this.logger.Warn("The listener is configured to be stopped on channel failure");
+                        this.InternalStop(OperationStopReason.Terminate);
+                    }
+                    else if ((this.busContext as AbstractBus)?.IsShuttingDown == true)
+                    {
+                        this.StopConsuming();
+                    }
+                    else
+                    {
+                        this.logger.Warn("The underlying channel has been closed, recovering the listener...");
+
+                        this.StopConsuming();
+                        if (!this.isDisposed && (this.busContext as AbstractBus)?.IsShuttingDown != true)
+                        {
+                            this.StartConsuming();
+                        }
+                    }
+                });
             }
         }
 
@@ -735,7 +788,7 @@ namespace Contour.Transport.RabbitMQ.Internal
                 this.responseBuilderFunc = responseBuilderFunc;
                 this.TimeoutTicket = timeoutTicket;
 
-                this.completionSource = new TaskCompletionSource<IMessage>();
+                this.completionSource = new TaskCompletionSource<IMessage>(TaskCreationOptions.RunContinuationsAsynchronously);
                 this.completionStopwatch = Stopwatch.StartNew();
             }
 

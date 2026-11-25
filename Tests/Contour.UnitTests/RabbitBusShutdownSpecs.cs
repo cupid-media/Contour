@@ -113,14 +113,6 @@ namespace Contour.UnitTests
                         });
 
                         modelMock
-                            .Setup(m => m.BasicConsume(It.IsAny<string>(), It.IsAny<bool>(), It.IsAny<string>(), It.IsAny<bool>(), It.IsAny<bool>(), It.IsAny<IDictionary<string, object>>(), It.IsAny<IBasicConsumer>()))
-                            .Callback<string, bool, string, bool, bool, IDictionary<string, object>, IBasicConsumer>((queue, _, _, _, _, _, consumer) =>
-                            {
-                                this.ConsumersByQueue[queue] = consumer;
-                            })
-                            .Returns<string, bool, string, bool, bool, IDictionary<string, object>, IBasicConsumer>((queue, _, _, _, _, _, _) => $"tag-{queue}");
-
-                        modelMock
                             .Setup(m => m.BasicPublish(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<bool>(), It.IsAny<IBasicProperties>(), It.IsAny<ReadOnlyMemory<byte>>()))
                             .Callback<string, string, bool, IBasicProperties, ReadOnlyMemory<byte>>((exchange, routingKey, _, props, body) =>
                             {
@@ -162,8 +154,33 @@ namespace Contour.UnitTests
                                 }
                             });
 
-                        modelMock.Setup(m => m.Abort()).Callback(() => modelOpen = false);
-                        modelMock.Setup(m => m.Dispose()).Callback(() => modelOpen = false);
+                        var channelQueueName = (string)null;
+                        modelMock
+                            .Setup(m => m.BasicConsume(It.IsAny<string>(), It.IsAny<bool>(), It.IsAny<string>(), It.IsAny<bool>(), It.IsAny<bool>(), It.IsAny<IDictionary<string, object>>(), It.IsAny<IBasicConsumer>()))
+                            .Callback<string, bool, string, bool, bool, IDictionary<string, object>, IBasicConsumer>((queue, _, _, _, _, _, consumer) =>
+                            {
+                                channelQueueName = queue;
+                                this.ConsumersByQueue[queue] = consumer;
+                            })
+                            .Returns<string, bool, string, bool, bool, IDictionary<string, object>, IBasicConsumer>((queue, _, _, _, _, _, _) => $"tag-{queue}");
+
+                        Action closeChannel = () =>
+                        {
+                            if (modelOpen)
+                            {
+                                modelOpen = false;
+                                if (channelQueueName != null)
+                                {
+                                    lock (this.EventsLock)
+                                    {
+                                        this.Events.Add($"ChannelClosed:{channelQueueName}");
+                                    }
+                                }
+                            }
+                        };
+
+                        modelMock.Setup(m => m.Abort()).Callback(closeChannel);
+                        modelMock.Setup(m => m.Dispose()).Callback(closeChannel);
 
                         return new RabbitChannel(
                             connMock.Object.Id,
@@ -470,6 +487,247 @@ namespace Contour.UnitTests
 
             bus.IsShuttingDown = false;
             bus.Shutdown();
+        }
+
+        [Test]
+        public void Bus_with_CallbackEndpoint_should_be_healthy_close_callback_channel_before_drop_and_not_leak_receivers_on_restart()
+        {
+            var harness = new FakeBusHarness();
+            var config = new BusConfiguration();
+            config.UseRabbitMq();
+            config.SetEndpoint("users-tags-manager");
+            config.SetConnectionString("amqp://guest:guest@localhost:5672/users.tags");
+            config.UsePayloadConverter(new JsonPayloadConverter());
+
+            config.Route("query.users.tags.adapter.get")
+                .WithDefaultCallbackEndpoint();
+
+            var bus = new RabbitBus(config, harness.ConnectionPoolMock.Object);
+            harness.Bus = bus;
+
+            bus.Start().Wait(TimeSpan.FromSeconds(5)).Should().BeTrue();
+            bus.ComponentTracker.CheckHealth().Should().BeTrue(
+                "a started bus with callback endpoints must report healthy components");
+
+            var receiverCountAfterFirstStart = System.Linq.Enumerable.Count(bus.Receivers);
+
+            bus.Stop();
+            bus.Start().Wait(TimeSpan.FromSeconds(5)).Should().BeTrue();
+            bus.ComponentTracker.CheckHealth().Should().BeTrue();
+
+            var receiverCountAfterRestart = System.Linq.Enumerable.Count(bus.Receivers);
+            receiverCountAfterRestart.Should().Be(
+                receiverCountAfterFirstStart,
+                "restarting the bus via Stop() -> Start() must not accumulate duplicate RabbitCallbackReceiver instances");
+
+            lock (harness.EventsLock)
+            {
+                harness.Events.Clear();
+            }
+
+            bus.Shutdown();
+
+            var callbackCloseIdx = harness.Events.FindIndex(e => e.StartsWith("ChannelClosed:users-tags-manager.replies-", StringComparison.Ordinal));
+            var dropIdx = harness.Events.IndexOf("connectionPool.Drop");
+
+            callbackCloseIdx.Should().BeGreaterOrEqualTo(0, $"Callback listener channel must be closed on Shutdown. Events: [{string.Join(", ", harness.Events)}]");
+            dropIdx.Should().BeGreaterThan(callbackCloseIdx, $"Callback channel must close BEFORE connectionPool.Drop. Events: [{string.Join(", ", harness.Events)}]");
+        }
+
+        [Test]
+        public void Stop_should_stop_all_receivers_in_parallel_so_second_queue_does_not_start_queued_messages_while_first_drains()
+        {
+            var harness = new FakeBusHarness();
+            var config = new BusConfiguration();
+            config.UseRabbitMq();
+            config.SetEndpoint("users-tags-manager");
+            config.SetConnectionString("amqp://guest:guest@localhost:5672/users.tags");
+            config.UsePayloadConverter(new JsonPayloadConverter());
+
+            var q1FirstEntered = new ManualResetEventSlim(false);
+            var q2FirstEntered = new ManualResetEventSlim(false);
+            var q1ProcessedCount = 0;
+            var q2ProcessedCount = 0;
+
+            var q1Consumer = new Mock<IAsyncConsumerOf<TestRequest>>();
+            q1Consumer
+                .Setup(c => c.HandleAsync(It.IsAny<IConsumingContext<TestRequest>>()))
+                .Returns<IConsumingContext<TestRequest>>(async ctx =>
+                {
+                    if (Interlocked.Increment(ref q1ProcessedCount) == 1)
+                    {
+                        q1FirstEntered.Set();
+                    }
+
+                    await Task.Delay(300);
+                    ctx.Accept();
+                });
+
+            var q2Consumer = new Mock<IAsyncConsumerOf<TestRequest>>();
+            q2Consumer
+                .Setup(c => c.HandleAsync(It.IsAny<IConsumingContext<TestRequest>>()))
+                .Returns<IConsumingContext<TestRequest>>(async ctx =>
+                {
+                    if (Interlocked.Increment(ref q2ProcessedCount) == 1)
+                    {
+                        q2FirstEntered.Set();
+                    }
+
+                    await Task.Delay(300);
+                    ctx.Accept();
+                });
+
+            config.On<TestRequest>("command.test.q1").RequiresAccept().ReactWith(q1Consumer.Object);
+            config.On<TestRequest>("command.test.q2").RequiresAccept().ReactWith(q2Consumer.Object);
+
+            var bus = new RabbitBus(config, harness.ConnectionPoolMock.Object);
+            harness.Bus = bus;
+            bus.Start().Wait(TimeSpan.FromSeconds(5)).Should().BeTrue();
+
+            SpinWait.SpinUntil(() => harness.ConsumersByQueue.Count == 2, TimeSpan.FromSeconds(5)).Should().BeTrue();
+
+            void Deliver(string label, ulong tag, int id)
+            {
+                var props = new Mock<IBasicProperties>();
+                props.SetupGet(p => p.Headers).Returns(new Dictionary<string, object>
+                {
+                    { Headers.MessageLabel, Encoding.UTF8.GetBytes(label) }
+                });
+
+                harness.ConsumersByQueue[$"users-tags-manager.{label}"].HandleBasicDeliver(
+                    $"tag-{label}",
+                    tag,
+                    false,
+                    label,
+                    string.Empty,
+                    props.Object,
+                    JsonSerializer.SerializeToUtf8Bytes(new TestRequest { UserId = id }));
+            }
+
+            // Deliver 2 messages to BOTH q1 and q2 (1 in-flight 300ms + 1 buffered in prefetch queue on each).
+            // Regardless of enumeration order, sequential stopping stops one queue for 300ms while the other queue
+            // finishes its 1st message and starts its 2nd buffered message!
+            Deliver("command.test.q1", 1UL, 1);
+            Deliver("command.test.q1", 2UL, 2);
+            Deliver("command.test.q2", 1UL, 10);
+            Deliver("command.test.q2", 2UL, 11);
+
+            q1FirstEntered.Wait(TimeSpan.FromSeconds(5)).Should().BeTrue();
+            q2FirstEntered.Wait(TimeSpan.FromSeconds(5)).Should().BeTrue();
+
+            bus.Stop();
+
+            q1ProcessedCount.Should().Be(1,
+                "stopping receivers in parallel must immediately cancel q1 so its 2nd prefetched message is not started");
+            q2ProcessedCount.Should().Be(1,
+                "stopping receivers in parallel must immediately cancel q2 so its 2nd prefetched message is not started");
+            harness.AlreadyClosedErrors.Should().Be(0);
+
+            bus.Shutdown();
+        }
+
+        [Test]
+        public void Shutdown_should_not_reset_IsConfigured_while_StopTask_is_still_draining_past_StopWaitTimeout()
+        {
+            var harness = new FakeBusHarness();
+            var handlerStarted = new ManualResetEventSlim(false);
+            bool? isConfiguredDuringOnStopped = null;
+
+            var config = new BusConfiguration();
+            config.UseRabbitMq();
+            config.SetEndpoint("users-tags-manager");
+            config.SetConnectionString("amqp://guest:guest@localhost:5672/users.tags");
+            config.UsePayloadConverter(new JsonPayloadConverter());
+
+            var consumerMock = new Mock<IAsyncConsumerOf<TestRequest>>();
+            consumerMock
+                .Setup(c => c.HandleAsync(It.IsAny<IConsumingContext<TestRequest>>()))
+                .Returns<IConsumingContext<TestRequest>>(async ctx =>
+                {
+                    handlerStarted.Set();
+                    await Task.Delay(250);
+                    ctx.Accept();
+                });
+
+            config.On<TestRequest>("command.slow")
+                .RequiresAccept()
+                .ReactWith(consumerMock.Object);
+
+            var bus = new RabbitBus(config, harness.ConnectionPoolMock.Object);
+            bus.StopWaitTimeout.Should().Be(TimeSpan.FromSeconds(5));
+            bus.StopWaitTimeout = TimeSpan.FromMilliseconds(50);
+            harness.Bus = bus;
+            bus.Stopped += (b, _) =>
+            {
+                isConfiguredDuringOnStopped = ((AbstractBus)b).IsConfigured;
+            };
+
+            bus.Start().Wait(TimeSpan.FromSeconds(5)).Should().BeTrue();
+            SpinWait.SpinUntil(() => harness.ConsumersByQueue.ContainsKey("users-tags-manager.command.slow"), TimeSpan.FromSeconds(5)).Should().BeTrue();
+
+            var props = new Mock<IBasicProperties>();
+            props.SetupGet(p => p.Headers).Returns(new Dictionary<string, object>
+            {
+                { Headers.MessageLabel, Encoding.UTF8.GetBytes("command.slow") }
+            });
+
+            harness.ConsumersByQueue["users-tags-manager.command.slow"].HandleBasicDeliver(
+                "tag-slow",
+                1UL,
+                false,
+                "command.slow",
+                string.Empty,
+                props.Object,
+                JsonSerializer.SerializeToUtf8Bytes(new TestRequest { UserId = 99 }));
+
+            handlerStarted.Wait(TimeSpan.FromSeconds(5)).Should().BeTrue();
+
+            bus.Shutdown();
+
+            isConfiguredDuringOnStopped.Should().BeTrue(
+                "Shutdown() must wait for StopTask to finish completely before resetting IsConfigured");
+            bus.IsConfigured.Should().BeFalse();
+            harness.AlreadyClosedErrors.Should().Be(0);
+        }
+
+        [Test]
+        public void Shutdown_should_cancel_pending_RequestAsync_expectations_when_sender_stops_instead_of_waiting_30s_timeout()
+        {
+            var harness = new FakeBusHarness();
+            var config = new BusConfiguration();
+            config.UseRabbitMq();
+            config.SetEndpoint("users-tags-manager");
+            config.SetConnectionString("amqp://guest:guest@localhost:5672/users.tags");
+            config.UsePayloadConverter(new JsonPayloadConverter());
+
+            config.Route("query.never.replies")
+                .WithRequestTimeout(TimeSpan.FromSeconds(30))
+                .WithDefaultCallbackEndpoint();
+
+            var bus = new RabbitBus(config, harness.ConnectionPoolMock.Object);
+            harness.Bus = bus;
+            bus.Start().Wait(TimeSpan.FromSeconds(5)).Should().BeTrue();
+
+            var published = new ManualResetEventSlim(false);
+            harness.OnBasicPublish = (exchange, _, _, _) =>
+            {
+                if (exchange == "query.never.replies")
+                {
+                    published.Set();
+                }
+            };
+
+            var requestTask = bus.RequestAsync<TestRequest, TestResponse>("query.never.replies", new TestRequest { UserId = 7 });
+            published.Wait(TimeSpan.FromSeconds(5)).Should().BeTrue();
+
+            var sw = Stopwatch.StartNew();
+            bus.Shutdown();
+
+            Action waitRequest = () => requestTask.GetAwaiter().GetResult();
+            waitRequest.Should().Throw<OperationCanceledException>();
+            sw.Stop();
+
+            sw.Elapsed.Should().BeLessThan(TimeSpan.FromSeconds(2));
         }
     }
 }

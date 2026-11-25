@@ -23,9 +23,10 @@ namespace Contour.Transport.RabbitMQ.Internal
         private readonly IEndpoint endpoint;
         private readonly IRabbitConnection connection;
         private readonly ReaderWriterLockSlim slimLock = new ReaderWriterLockSlim(LockRecursionPolicy.SupportsRecursion);
-        private CancellationTokenSource cancellationTokenSource;
+        private volatile CancellationTokenSource cancellationTokenSource;
         private IPublishConfirmationTracker confirmationTracker = new DummyPublishConfirmationTracker();
         private volatile bool isStarted;
+        private volatile bool isDisposed;
 
         /// <summary>
         /// Initializes a new instance of the <see cref="Producer"/> class. 
@@ -102,7 +103,9 @@ namespace Contour.Transport.RabbitMQ.Internal
         public void Dispose()
         {
             this.logger.Trace(m => m("Disposing producer of [{0}].", this.Label));
+            this.isDisposed = true;
             this.Stop();
+            this.CallbackListener?.Dispose();
         }
 
         /// <summary>
@@ -120,9 +123,9 @@ namespace Contour.Transport.RabbitMQ.Internal
             {
                 try
                 {
-                    if (!this.isStarted || this.Channel == null)
+                    if (!this.isStarted || this.Channel == null || !this.Channel.IsOpen)
                     {
-                        throw new InvalidOperationException($"Unable to publish via producer [{this.GetHashCode()}] because it is not started or has been stopped");
+                        throw new InvalidOperationException($"Unable to publish via producer [{this.GetHashCode()}] because it is not started, has been stopped, or its channel is closed");
                     }
 
                     var nativeRoute = (RabbitRoute)this.RouteResolver.Resolve(this.endpoint, message.Label);
@@ -206,13 +209,14 @@ namespace Contour.Transport.RabbitMQ.Internal
                 this.logger.Info($"Starting producer of [{this.Label}] at [{this.BrokerUrl}], hasCallback={this.CallbackListener != null}, confirmations={this.ConfirmationIsRequired}");
                 this.slimLock.EnterWriteLock();
 
-                if (this.isStarted)
+                if (this.isStarted || this.isDisposed)
                 {
                     return;
                 }
 
-                this.cancellationTokenSource = new CancellationTokenSource();
-                var token = this.cancellationTokenSource.Token;
+                var cts = new CancellationTokenSource();
+                this.cancellationTokenSource = cts;
+                var token = cts.Token;
 
                 this.Channel = this.connection.OpenChannel(token);
                 this.Channel.Shutdown += this.OnChannelShutdown;
@@ -318,21 +322,44 @@ namespace Contour.Transport.RabbitMQ.Internal
         private void InternalStop(OperationStopReason reason)
         {
             var shouldRaiseStopped = false;
+            var shouldStopCallback = false;
+
+            try
+            {
+                this.cancellationTokenSource?.Cancel(false);
+            }
+            catch (ObjectDisposedException)
+            {
+                // Suppress if concurrently disposed
+            }
 
             try
             {
                 this.logger.Trace($"Stopping producer of [{this.Label}]");
                 this.slimLock.EnterWriteLock();
 
+                var cts = this.cancellationTokenSource;
+                this.cancellationTokenSource = null;
+
                 if (!this.isStarted && this.Channel == null)
                 {
+                    cts?.Dispose();
                     return;
                 }
 
                 this.isStarted = false;
                 shouldRaiseStopped = true;
+                shouldStopCallback = this.CallbackListener != null;
 
-                this.cancellationTokenSource?.Cancel(false);
+                try
+                {
+                    cts?.Cancel(false);
+                    cts?.Dispose();
+                }
+                catch (ObjectDisposedException)
+                {
+                }
+
                 this.confirmationTracker?.Dispose();
 
                 if (this.Channel != null)
@@ -363,6 +390,18 @@ namespace Contour.Transport.RabbitMQ.Internal
                 catch (Exception)
                 {
                     // Suppress all errors
+                }
+            }
+
+            if (shouldStopCallback)
+            {
+                try
+                {
+                    this.CallbackListener?.StopConsuming();
+                }
+                catch (Exception ex)
+                {
+                    this.logger.Warn($"Failed to stop callback listener for producer of [{this.Label}]: {ex.Message}", ex);
                 }
             }
 
@@ -403,18 +442,29 @@ namespace Contour.Transport.RabbitMQ.Internal
 
             if (args.Initiator != ShutdownInitiator.Application)
             {
-                if (this.StopOnChannelShutdown)
+                Task.Run(() =>
                 {
-                    this.logger.Warn("The producer is configured to be stopped on channel failure");
-                    this.InternalStop(OperationStopReason.Terminate);
-                }
-                else
-                {
-                    this.logger.Warn("The underlying channel has been closed, recovering the producer...");
+                    if (this.isDisposed)
+                    {
+                        return;
+                    }
 
-                    this.Stop();
-                    this.Start();
-                }
+                    if (this.StopOnChannelShutdown)
+                    {
+                        this.logger.Warn("The producer is configured to be stopped on channel failure");
+                        this.InternalStop(OperationStopReason.Terminate);
+                    }
+                    else
+                    {
+                        this.logger.Warn("The underlying channel has been closed, recovering the producer...");
+
+                        this.Stop();
+                        if (!this.isDisposed)
+                        {
+                            this.Start();
+                        }
+                    }
+                });
             }
         }
     }

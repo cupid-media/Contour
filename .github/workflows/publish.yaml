@@ -13,7 +13,8 @@ concurrency:
 env:
   DOTNET_VERSION: '8.0.x'
   PACKAGE_ID: 'Contour'
-  PROJECT_PATH: './src'
+  PROJECT_PATH: '.'
+  SOLUTION_FILE: './Contour.sln'
   PROJECT_FILE: './Sources/Contour/Contour.csproj'
   GITHUB_FEED: 'https://nuget.pkg.github.com/${{ github.repository_owner }}/index.json'
   NUGET_ORG_FEED: 'https://api.nuget.org/v3/index.json'
@@ -166,27 +167,26 @@ jobs:
         working-directory: ${{ env.PROJECT_PATH }}
         run: |
           set -euo pipefail
-          dotnet restore |& tee -a "$FAILURE_LOG"
+          dotnet restore "${{ env.SOLUTION_FILE }}" |& tee -a "$FAILURE_LOG"
 
       - name: Build
         working-directory: ${{ env.PROJECT_PATH }}
         run: |
           set -euo pipefail
-          dotnet build --configuration Release --no-restore |& tee -a "$FAILURE_LOG"
+          dotnet build "${{ env.SOLUTION_FILE }}" --configuration Release --no-restore |& tee -a "$FAILURE_LOG"
 
       - name: Test
-        if: false
         working-directory: ${{ env.PROJECT_PATH }}
         run: |
           set -euo pipefail
-          dotnet test --configuration Release --no-build --verbosity normal |& tee -a "$FAILURE_LOG"
+          dotnet test "${{ env.SOLUTION_FILE }}" --configuration Release --no-build --verbosity normal |& tee -a "$FAILURE_LOG"
 
       - name: Pack (deterministic files, include symbols)
         working-directory: ${{ env.PROJECT_PATH }}
         run: |
           set -euo pipefail
           VERSION="${{ steps.eff.outputs.version }}"
-          dotnet pack \
+          dotnet pack "${{ env.PROJECT_FILE }}" \
             --configuration Release \
             --no-build \
             -p:Version="${VERSION}" \

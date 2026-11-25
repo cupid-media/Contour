@@ -210,6 +210,83 @@ namespace Contour.UnitTests
             sw.Elapsed.Should().BeLessThan(TimeSpan.FromSeconds(2));
         }
 
+        [Test]
+        public void OnChannelShutdown_should_not_deadlock_dispatch_thread_while_async_consumer_awaits_continuation()
+        {
+            var readyEvent = new ManualResetEvent(true);
+            var handlerEntered = new ManualResetEventSlim(false);
+            var continuationGate = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+
+            var consumerMock = new Mock<IAsyncConsumerOf<TestPayload>>();
+            consumerMock
+                .Setup(c => c.HandleAsync(It.IsAny<IConsumingContext<TestPayload>>()))
+                .Returns<IConsumingContext<TestPayload>>(async _ =>
+                {
+                    handlerEntered.Set();
+                    await continuationGate.Task;
+                });
+
+            var (listener, modelMock, consumingStarted, deliver) = CreateListenerWithAsyncConsumer(readyEvent, consumerMock.Object);
+
+            listener.StartConsuming();
+            consumingStarted.Wait(TimeSpan.FromSeconds(5)).Should().BeTrue();
+
+            deliver();
+            handlerEntered.Wait(TimeSpan.FromSeconds(5)).Should().BeTrue();
+
+            // Simulate RabbitMQ I/O loop thread: it fires ModelShutdown and can only complete the
+            // in-flight RPC/continuation AFTER ModelShutdown returns on that same thread.
+            var ioThreadCompleted = Task.Run(() =>
+            {
+                modelMock.Raise(
+                    m => m.ModelShutdown += null,
+                    new ShutdownEventArgs(ShutdownInitiator.Peer, 320, "CONNECTION_FORCED"));
+
+                continuationGate.TrySetResult(true);
+            });
+
+            ioThreadCompleted.Wait(TimeSpan.FromSeconds(1)).Should().BeTrue(
+                "OnChannelShutdown must not block the AMQP I/O thread waiting for an in-flight async worker");
+
+            listener.StopConsuming();
+        }
+
+        [Test]
+        public void StopConsuming_should_bound_wait_time_when_worker_is_hung_and_still_close_channel()
+        {
+            var readyEvent = new ManualResetEvent(true);
+            var handlerEntered = new ManualResetEventSlim(false);
+            var neverCompletes = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+
+            var consumerMock = new Mock<IAsyncConsumerOf<TestPayload>>();
+            consumerMock
+                .Setup(c => c.HandleAsync(It.IsAny<IConsumingContext<TestPayload>>()))
+                .Returns<IConsumingContext<TestPayload>>(async _ =>
+                {
+                    handlerEntered.Set();
+                    await neverCompletes.Task;
+                });
+
+            var (listener, modelMock, consumingStarted, deliver) = CreateListenerWithAsyncConsumer(readyEvent, consumerMock.Object);
+            listener.WorkerDrainTimeout.Should().BeLessOrEqualTo(TimeSpan.FromSeconds(30),
+                "Listener must have a finite default WorkerDrainTimeout so hung handlers cannot block pod shutdown forever");
+            listener.WorkerDrainTimeout = TimeSpan.FromMilliseconds(150);
+
+            listener.StartConsuming();
+            consumingStarted.Wait(TimeSpan.FromSeconds(5)).Should().BeTrue();
+
+            deliver();
+            handlerEntered.Wait(TimeSpan.FromSeconds(5)).Should().BeTrue();
+
+            var stopTask = Task.Run(() => listener.StopConsuming());
+            var completedWithinBound = stopTask.Wait(TimeSpan.FromSeconds(1));
+
+            neverCompletes.TrySetResult(true);
+
+            completedWithinBound.Should().BeTrue("StopConsuming must respect WorkerDrainTimeout when a handler hangs");
+            modelMock.Object.IsOpen.Should().BeFalse("Channel must still be closed after drain timeout expires");
+        }
+
         public class TestPayload
         {
             public string Value { get; set; }

@@ -21,6 +21,7 @@ namespace Contour.Transport.RabbitMQ.Internal
         private readonly IConnectionPool<IRabbitConnection> connectionPool;
         private readonly ConcurrentQueue<IListener> listeners = new ConcurrentQueue<IListener>();
         private readonly RabbitReceiverOptions receiverOptions;
+        private volatile bool isStarted;
         private volatile bool isStopping;
 
         /// <summary>
@@ -50,7 +51,11 @@ namespace Contour.Transport.RabbitMQ.Internal
         /// <summary>
         /// Gets a value indicating whether is started.
         /// </summary>
-        public bool IsStarted { get; private set; }
+        public bool IsStarted
+        {
+            get => this.isStarted;
+            private set => this.isStarted = value;
+        }
         
         public override bool IsHealthy => this.IsStarted;
 
@@ -201,7 +206,7 @@ namespace Contour.Transport.RabbitMQ.Internal
         /// <summary>
         /// Stops the listeners
         /// </summary>
-        private void StopListeners()
+        protected void StopListeners()
         {
             this.logger.Trace(m => m("Stopping listeners in receiver of [{0}]", this.Configuration.Label));
 
@@ -261,7 +266,7 @@ namespace Contour.Transport.RabbitMQ.Internal
 
         private void OnListenerStopped(ListenerStoppedEventArgs args, object sender)
         {
-            if (args.Reason == OperationStopReason.Regular || this.isStopping)
+            if (args.Reason == OperationStopReason.Regular || this.isStopping || !this.IsStarted || this.bus.IsShuttingDown)
             {
                 return;
             }

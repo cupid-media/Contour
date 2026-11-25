@@ -22,7 +22,7 @@ namespace Contour.Transport.RabbitMQ.Internal
         /// <summary>
         /// Шина полностью сконфигурированна и готова слушать входящие и публиковать исходящии, осталось ее только включить
         /// </summary>
-        private bool isPrepared;
+        private volatile bool isPrepared;
 
         private CancellationTokenSource cancellationTokenSource;
         private Task workTask;
@@ -51,6 +51,8 @@ namespace Contour.Transport.RabbitMQ.Internal
         /// Gets the when ready.
         /// </summary>
         public override WaitHandle WhenReady => this.ready;
+
+        internal TimeSpan StopWaitTimeout { get; set; } = TimeSpan.FromSeconds(5);
 
         /// <summary>
         /// Starts a bus
@@ -100,7 +102,7 @@ namespace Contour.Transport.RabbitMQ.Internal
             var token = this.cancellationTokenSource.Token;
             this.workTask = Task.Factory.StartNew(this.StopTask, token, TaskCreationOptions.LongRunning, TaskScheduler.Default);
 
-            this.workTask.Wait(5000);
+            this.workTask.Wait(this.StopWaitTimeout);
         }
 
         /// <summary>
@@ -119,14 +121,14 @@ namespace Contour.Transport.RabbitMQ.Internal
             {
                 this.Stop();
 
+                // если не ожидать завершения задачи до сброса флага IsShuttingDown и конфигурации,
+                // Stop() вернется через 5 секунд, пока StopTask еще дренирует in-flight обработчики;
+                // также при ошибках задача могла не успеть закрыться и входить в бесконечное ожидание в Restart -> ResetRestartTask.
+                this.workTask.Wait();
+
                 this.logger.Trace(m => m("{0}: resetting bus configuration", this.Endpoint));
                 this.IsConfigured = false;
                 this.isPrepared = false;
-
-                // если не ожидать завершения задачи до сброса флага IsShuttingDown,
-                // тогда в случае ошибок (например, когда обработчик пытается отправить сообщение в шину, а она в состоянии закрытия)
-                // задача может не успеть закрыться и она входит в бесконечное ожидание в методе Restart -> ResetRestartTask.
-                this.workTask.Wait();
 
                 this.ComponentTracker.UnregisterAll();
                 this.connectionPool.Drop();
@@ -159,15 +161,15 @@ namespace Contour.Transport.RabbitMQ.Internal
             {
                 receiver = new RabbitCallbackReceiver(this, configuration, this.connectionPool);
 
-                // No need to subscribe to listener-created event as it will not be fired by the callback receiver. A callback listener is not checked with listeners in other receivers for compatibility.
+                // Callback receivers are owned by their Producer/RabbitSender lifecycle and must not be added to ComponentTracker
+                // (otherwise IsHealthy remains false and Stop()->Start() or producer reconnects accumulate duplicate instances).
             }
             else
             {
                 receiver = new RabbitReceiver(this, configuration, this.connectionPool);
                 receiver.ListenerCreated += this.OnListenerCreated;
+                this.ComponentTracker.Register(receiver);
             }
-
-            this.ComponentTracker.Register(receiver);
 
             this.logger.Trace(
                 $"A receiver of [{configuration.Label}] with connection string [{configuration.Options.GetConnectionString()}] registered successfully");
@@ -244,9 +246,14 @@ namespace Contour.Transport.RabbitMQ.Internal
             this.OnStopping();
 
             this.logger.Trace(m => m("{0}: stopping regular receivers.", this.Endpoint));
-            this.Receivers
+            var regularReceivers = this.Receivers
                 .Where(r => !(r is RabbitCallbackReceiver))
-                .ForEach(r => r.Stop());
+                .ToArray();
+
+            if (regularReceivers.Length > 0)
+            {
+                Task.WaitAll(regularReceivers.Select(r => Task.Run(() => r.Stop())).ToArray());
+            }
 
             this.logger.Trace(m => m("{0}: marking as not ready.", this.Endpoint));
             this.ready.Reset();

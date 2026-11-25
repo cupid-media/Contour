@@ -26,6 +26,7 @@ namespace Contour.Transport.RabbitMQ.Internal
         private readonly RabbitSenderOptions senderOptions;
         private IProducerSelector producerSelector;
         private IFaultTolerantProducer faultTolerantProducer;
+        private volatile bool isStarted;
         private volatile bool isStopping;
 
         /// <summary>
@@ -56,7 +57,11 @@ namespace Contour.Transport.RabbitMQ.Internal
         /// <summary>
         /// Если <c>true</c> - запущен, иначе <c>false</c>.
         /// </summary>
-        public bool IsStarted { get; private set; }
+        public bool IsStarted
+        {
+            get => this.isStarted;
+            private set => this.isStarted = value;
+        }
 
         /// <summary>
         /// Если <c>true</c> - отправитель работает без сбоев, иначе <c>false</c>.
@@ -282,6 +287,7 @@ namespace Contour.Transport.RabbitMQ.Internal
 
                 if (sender == delistedProducer)
                 {
+                    delistedProducer.Dispose();
                     this.logger.Trace($"Producer [{delistedProducer.GetHashCode()}] has been delisted");
                     break;
                 }

@@ -5,7 +5,6 @@
     using System.IO;
     using System.Threading;
     using Common.Logging;
-    using Contour.Helpers;
     using Helpers;
     using Receiving;
     using Topology;

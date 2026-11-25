@@ -4,8 +4,8 @@
     <TargetFramework>netstandard2.0</TargetFramework>
     <IsPackable>true</IsPackable>
     <PackageId>Contour</PackageId>
-    <Version>3.3.0</Version>
-    <PackageReleaseNotes>Add distributed tracing</PackageReleaseNotes>
+    <Version>3.3.1</Version>
+    <PackageReleaseNotes>Graceful shutdown: drain in-flight async consumers before closing producers, callbacks, and connections</PackageReleaseNotes>
     <PackageTags>contour servicebus bus</PackageTags>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
     <RepositoryUrl>https://github.com/SDVentures/Contour</RepositoryUrl>
