@@ -4,6 +4,7 @@ using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
 using System.Threading.Tasks;
 
+using Common.Logging;
 using Contour.Configuration;
 using Contour.Receiving;
 
@@ -17,6 +18,8 @@ namespace Contour.Transport.RabbitMQ.Internal
     /// </summary>
     internal class RabbitDelivery : IDelivery
     {
+        private static readonly ILog Logger = LogManager.GetLogger<RabbitDelivery>();
+
         /// <summary>
         /// Заголовки сообщения.
         /// </summary>
@@ -144,6 +147,12 @@ namespace Contour.Transport.RabbitMQ.Internal
                 return;
             }
 
+            if (this.Channel == null || !this.Channel.IsOpen)
+            {
+                Logger.Warn($"Skipping Accept for message [{this.Label}] because the delivery channel is already closed");
+                return;
+            }
+
             this.Channel.Accept(this);
             this.isAccepted = true;
         }
@@ -200,6 +209,12 @@ namespace Contour.Transport.RabbitMQ.Internal
         {
             if (!this.requiresAccept || this.isAccepted)
             {
+                return;
+            }
+
+            if (this.Channel == null || !this.Channel.IsOpen)
+            {
+                Logger.Warn($"Skipping Reject for message [{this.Label}] because the delivery channel is already closed");
                 return;
             }
 

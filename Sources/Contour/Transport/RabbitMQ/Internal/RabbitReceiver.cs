@@ -21,6 +21,7 @@ namespace Contour.Transport.RabbitMQ.Internal
         private readonly IConnectionPool<IRabbitConnection> connectionPool;
         private readonly ConcurrentQueue<IListener> listeners = new ConcurrentQueue<IListener>();
         private readonly RabbitReceiverOptions receiverOptions;
+        private volatile bool isStopping;
 
         /// <summary>
         /// Initializes a new instance of the <see cref="RabbitReceiver"/> class. 
@@ -100,6 +101,7 @@ namespace Contour.Transport.RabbitMQ.Internal
                 return;
             }
 
+            this.isStopping = false;
             this.logger.Info($"Starting receiver of [{this.Configuration.Label}], URLs=[{string.Join(",", this.receiverOptions.RabbitConnectionString)}]");
 
             this.StartListeners();
@@ -117,6 +119,7 @@ namespace Contour.Transport.RabbitMQ.Internal
                 return;
             }
 
+            this.isStopping = true;
             this.logger.Info($"Stopping receiver of [{this.Configuration.Label}]");
 
             this.StopListeners();
@@ -258,26 +261,28 @@ namespace Contour.Transport.RabbitMQ.Internal
 
         private void OnListenerStopped(ListenerStoppedEventArgs args, object sender)
         {
-            if (args.Reason == OperationStopReason.Regular)
+            if (args.Reason == OperationStopReason.Regular || this.isStopping)
             {
                 return;
             }
 
             this.logger.Warn($"Listener [{sender.GetHashCode()}] has been stopped and will be reenlisted");
 
-            while (true)
+            var count = this.listeners.Count;
+            for (var i = 0; i < count; i++)
             {
-                IListener delistedListener;
-                if (this.listeners.TryDequeue(out delistedListener))
+                if (!this.listeners.TryDequeue(out var delistedListener))
                 {
-                    if (sender == delistedListener)
-                    {
-                        this.logger.Trace($"Listener [{delistedListener.GetHashCode()}] has been delisted");
-                        break;
-                    }
-
-                    this.listeners.Enqueue(delistedListener);
+                    break;
                 }
+
+                if (sender == delistedListener)
+                {
+                    this.logger.Trace($"Listener [{delistedListener.GetHashCode()}] has been delisted");
+                    break;
+                }
+
+                this.listeners.Enqueue(delistedListener);
             }
         }
 

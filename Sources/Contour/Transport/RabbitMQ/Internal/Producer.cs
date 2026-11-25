@@ -25,6 +25,7 @@ namespace Contour.Transport.RabbitMQ.Internal
         private readonly ReaderWriterLockSlim slimLock = new ReaderWriterLockSlim(LockRecursionPolicy.SupportsRecursion);
         private CancellationTokenSource cancellationTokenSource;
         private IPublishConfirmationTracker confirmationTracker = new DummyPublishConfirmationTracker();
+        private volatile bool isStarted;
 
         /// <summary>
         /// Initializes a new instance of the <see cref="Producer"/> class. 
@@ -59,7 +60,7 @@ namespace Contour.Transport.RabbitMQ.Internal
 
         public event EventHandler<ProducerStoppedEventArgs> Stopped = (sender, args) => { };
 
-        public bool IsInGoodCondition => !connection.IsBlocked;
+        public bool IsInGoodCondition => this.isStarted && (this.Channel?.IsOpen ?? false) && !this.connection.IsBlocked;
 
         public bool StopOnChannelShutdown { get; set; }
 
@@ -73,7 +74,7 @@ namespace Contour.Transport.RabbitMQ.Internal
         /// </summary>
         public string BrokerUrl { get; }
 
-        public string ConnectionKey => this.Channel.ConnectionKey;
+        public string ConnectionKey => this.connection.ConnectionKey;
 
         /// <summary>
         /// Слушатель (получатель) ответных сообщений на запрос.
@@ -119,6 +120,11 @@ namespace Contour.Transport.RabbitMQ.Internal
             {
                 try
                 {
+                    if (!this.isStarted || this.Channel == null)
+                    {
+                        throw new InvalidOperationException($"Unable to publish via producer [{this.GetHashCode()}] because it is not started or has been stopped");
+                    }
+
                     var nativeRoute = (RabbitRoute)this.RouteResolver.Resolve(this.endpoint, message.Label);
                     this.logger.Trace(m => m("Emitting message [{0}] through [{1}].", message.Label, nativeRoute));
                     Func<IBasicProperties, IDictionary<string, object>> propsVisitor = p => ExtractProperties(ref p, message.Headers);
@@ -199,7 +205,12 @@ namespace Contour.Transport.RabbitMQ.Internal
             {
                 this.logger.Info($"Starting producer of [{this.Label}] at [{this.BrokerUrl}], hasCallback={this.CallbackListener != null}, confirmations={this.ConfirmationIsRequired}");
                 this.slimLock.EnterWriteLock();
-                
+
+                if (this.isStarted)
+                {
+                    return;
+                }
+
                 this.cancellationTokenSource = new CancellationTokenSource();
                 var token = this.cancellationTokenSource.Token;
 
@@ -214,6 +225,7 @@ namespace Contour.Transport.RabbitMQ.Internal
                 }
 
                 this.CallbackListener?.StartConsuming();
+                this.isStarted = true;
 
                 this.logger.Info($"Producer of [{this.Label}] at [{this.BrokerUrl}] started successfully");
             }
@@ -305,25 +317,41 @@ namespace Contour.Transport.RabbitMQ.Internal
 
         private void InternalStop(OperationStopReason reason)
         {
+            var shouldRaiseStopped = false;
+
             try
             {
                 this.logger.Trace($"Stopping producer of [{this.Label}]");
                 this.slimLock.EnterWriteLock();
-                
-                this.cancellationTokenSource.Cancel(true);
+
+                if (!this.isStarted && this.Channel == null)
+                {
+                    return;
+                }
+
+                this.isStarted = false;
+                shouldRaiseStopped = true;
+
+                this.cancellationTokenSource?.Cancel(false);
                 this.confirmationTracker?.Dispose();
 
-                try
+                if (this.Channel != null)
                 {
-                    this.Channel.Shutdown -= this.OnChannelShutdown;
-                    this.Channel?.Dispose();
+                    try
+                    {
+                        this.Channel.Shutdown -= this.OnChannelShutdown;
+                        this.Channel.Dispose();
+                    }
+                    catch (Exception)
+                    {
+                        // Any channel/model disposal exceptions are suppressed
+                    }
+                    finally
+                    {
+                        this.Channel = null;
+                    }
                 }
-                catch (Exception)
-                {
-                    // Any channel/model disposal exceptions are suppressed
-                }
-                
-                this.Stopped(this, new ProducerStoppedEventArgs(this, reason));
+
                 this.logger.Trace($"Producer of [{this.Label}] stopped successfully");
             }
             finally
@@ -336,6 +364,11 @@ namespace Contour.Transport.RabbitMQ.Internal
                 {
                     // Suppress all errors
                 }
+            }
+
+            if (shouldRaiseStopped)
+            {
+                this.Stopped(this, new ProducerStoppedEventArgs(this, reason));
             }
         }
 

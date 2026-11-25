@@ -26,6 +26,7 @@ namespace Contour.Transport.RabbitMQ.Internal
         private readonly RabbitSenderOptions senderOptions;
         private IProducerSelector producerSelector;
         private IFaultTolerantProducer faultTolerantProducer;
+        private volatile bool isStopping;
 
         /// <summary>
         /// Initializes a new instance of the <see cref="RabbitSender"/> class. 
@@ -81,6 +82,7 @@ namespace Contour.Transport.RabbitMQ.Internal
                 return;
             }
 
+            this.isStopping = false;
             this.logger.Info($"Starting sender of [{this.Configuration.Label}], URLs=[{string.Join(",", this.senderOptions.RabbitConnectionString)}]");
 
             this.StartProducers();
@@ -98,10 +100,11 @@ namespace Contour.Transport.RabbitMQ.Internal
                 return;
             }
 
+            this.isStopping = true;
             this.logger.Info($"Stopping sender of [{this.Configuration.Label}]");
 
+            this.faultTolerantProducer?.Dispose();
             this.StopProducers();
-            this.faultTolerantProducer.Dispose();
 
             this.IsStarted = false;
         }
@@ -262,26 +265,33 @@ namespace Contour.Transport.RabbitMQ.Internal
 
         private void OnProducerStopped(string url, object sender, ProducerStoppedEventArgs args)
         {
-            if (args.Reason == OperationStopReason.Regular)
+            if (args.Reason == OperationStopReason.Regular || this.isStopping || !this.IsStarted || this.bus.IsShuttingDown)
             {
                 return;
             }
 
             this.logger.Warn($"Producer [{sender.GetHashCode()}] has been stopped and will be reenlisted");
 
-            while (true)
+            var count = this.producers.Count;
+            for (var i = 0; i < count; i++)
             {
-                IProducer delistedProducer;
-                if (this.producers.TryDequeue(out delistedProducer))
+                if (!this.producers.TryDequeue(out var delistedProducer))
                 {
-                    if (sender == delistedProducer)
-                    {
-                        this.logger.Trace($"Producer [{delistedProducer.GetHashCode()}] has been delisted");
-                        break;
-                    }
-
-                    this.producers.Enqueue(delistedProducer);
+                    break;
                 }
+
+                if (sender == delistedProducer)
+                {
+                    this.logger.Trace($"Producer [{delistedProducer.GetHashCode()}] has been delisted");
+                    break;
+                }
+
+                this.producers.Enqueue(delistedProducer);
+            }
+
+            if (this.isStopping || !this.IsStarted || this.bus.IsShuttingDown)
+            {
+                return;
             }
 
             var newProducer = this.EnlistProducer(url);

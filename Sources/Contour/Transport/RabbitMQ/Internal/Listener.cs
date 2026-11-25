@@ -294,11 +294,12 @@ namespace Contour.Transport.RabbitMQ.Internal
 
                 this.workers = new ConcurrentBag<Task>(Enumerable
                     .Range(0, count)
-                    .Select(async 
-                        _ => await 
-                            Task.Factory.StartNew(async 
-                                () => await this.ConsumerTaskMethod(token), token, TaskCreationOptions.LongRunning,
-                                TaskScheduler.Default)));
+                    .Select(
+                        _ => Task.Factory.StartNew(
+                            () => this.ConsumerTaskMethod(token),
+                            token,
+                            TaskCreationOptions.LongRunning,
+                            TaskScheduler.Default).Unwrap()));
 
                 this.isConsuming = true;
                 this.logger.Info($"Listener on [{this.endpoint.ListeningSource}] at [{this.BrokerUrl}] started with {count} workers");
@@ -395,18 +396,21 @@ namespace Contour.Transport.RabbitMQ.Internal
                 this.isConsuming = false;
                 this.logger.InfoFormat("Stopping consuming on [{0}].", this.endpoint.ListeningSource);
 
-                this.cancellationTokenSource.Cancel(true);
+                this.cancellationTokenSource?.Cancel(false);
 
-                while (this.workers.TryTake(out var worker))
+                if (this.workers != null)
                 {
-                    try
+                    while (this.workers.TryTake(out var worker))
                     {
-                        worker.Wait();
-                        worker.Dispose();
-                    }
-                    catch (Exception)
-                    {
-                        // May catch OperationCanceledExceptions here on Task.Wait()
+                        try
+                        {
+                            worker.Wait();
+                            worker.Dispose();
+                        }
+                        catch (Exception)
+                        {
+                            // May catch OperationCanceledExceptions here on Task.Wait()
+                        }
                     }
                 }
 
@@ -423,7 +427,7 @@ namespace Contour.Transport.RabbitMQ.Internal
                     }
                 }
 
-                this.ticketTimer.Dispose();
+                this.ticketTimer?.Dispose();
                 this.expectations.Values.ForEach(e => e.Cancel());
 
                 this.Stopped(this, new ListenerStoppedEventArgs(this, reason));
@@ -473,11 +477,21 @@ namespace Contour.Transport.RabbitMQ.Internal
                     {
                         return;
                     }
-                    
-                    if (!this.busContext.WhenReady.WaitOne(60000))
+
+                    var waitHandles = this.busContext.WhenReady != null
+                        ? new[] { this.busContext.WhenReady, token.WaitHandle }
+                        : new[] { token.WaitHandle };
+
+                    var waitIndex = WaitHandle.WaitAny(waitHandles, 60000);
+                    if (token.IsCancellationRequested)
+                    {
+                        return;
+                    }
+
+                    if (waitIndex == WaitHandle.WaitTimeout)
                     {
                         waitSecond += 60;
-                        this.logger.Warn(m => m ("Wait when bus [{0}] will be ready already {1} seconds. Continue waiting.", this.busContext.Endpoint.Address, waitSecond));
+                        this.logger.Warn(m => m("Wait when bus [{0}] will be ready already {1} seconds. Continue waiting.", this.busContext.Endpoint.Address, waitSecond));
                     }
                     else
                     {

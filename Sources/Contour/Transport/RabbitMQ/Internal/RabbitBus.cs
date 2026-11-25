@@ -32,6 +32,11 @@ namespace Contour.Transport.RabbitMQ.Internal
         /// </summary>
         /// <param name="configuration">The configuration.</param>
         public RabbitBus(BusConfiguration configuration)
+            : this(configuration, null)
+        {
+        }
+
+        internal RabbitBus(BusConfiguration configuration, IConnectionPool<IRabbitConnection> connectionPool)
             : base(configuration)
         {
             this.cancellationTokenSource = new CancellationTokenSource();
@@ -39,7 +44,7 @@ namespace Contour.Transport.RabbitMQ.Internal
             completion.SetResult(new object());
             this.workTask = completion.Task;
             
-            this.connectionPool = new RabbitConnectionPool(this);
+            this.connectionPool = connectionPool ?? new RabbitConnectionPool(this);
         }
         
         /// <summary>
@@ -109,20 +114,27 @@ namespace Contour.Transport.RabbitMQ.Internal
                 this.Endpoint);
 
             this.IsShuttingDown = true;
-            this.connectionPool.Drop();
 
-            this.Stop();
+            try
+            {
+                this.Stop();
 
-            this.logger.Trace(m => m("{0}: resetting bus configuration", this.Endpoint));
-            this.IsConfigured = false;
+                this.logger.Trace(m => m("{0}: resetting bus configuration", this.Endpoint));
+                this.IsConfigured = false;
+                this.isPrepared = false;
 
-            // если не ожидать завершения задачи до сброса флага IsShuttingDown,
-            // тогда в случае ошибок (например, когда обработчик пытается отправить сообщение в шину, а она в состоянии закрытия)
-            // задача может не успеть закрыться и она входит в бесконечное ожидание в методе Restart -> ResetRestartTask.
-            this.workTask.Wait();
+                // если не ожидать завершения задачи до сброса флага IsShuttingDown,
+                // тогда в случае ошибок (например, когда обработчик пытается отправить сообщение в шину, а она в состоянии закрытия)
+                // задача может не успеть закрыться и она входит в бесконечное ожидание в методе Restart -> ResetRestartTask.
+                this.workTask.Wait();
 
-            this.ComponentTracker.UnregisterAll();
-            this.IsShuttingDown = false;
+                this.ComponentTracker.UnregisterAll();
+                this.connectionPool.Drop();
+            }
+            finally
+            {
+                this.IsShuttingDown = false;
+            }
         }
 
         /// <summary>
@@ -229,14 +241,23 @@ namespace Contour.Transport.RabbitMQ.Internal
                 return;
             }
 
+            this.OnStopping();
+
+            this.logger.Trace(m => m("{0}: stopping regular receivers.", this.Endpoint));
+            this.Receivers
+                .Where(r => !(r is RabbitCallbackReceiver))
+                .ForEach(r => r.Stop());
+
             this.logger.Trace(m => m("{0}: marking as not ready.", this.Endpoint));
             this.ready.Reset();
 
-            this.OnStopping();
+            this.logger.Trace(m => m("{0}: stopping senders.", this.Endpoint));
+            this.Senders.ForEach(s => s.Stop());
 
-            this.logger.Trace(m => m("{0}: stopping bus components.", this.Endpoint));
+            this.logger.Trace(m => m("{0}: stopping remaining bus components.", this.Endpoint));
             this.ComponentTracker.StopAll();
-            
+
+            this.isPrepared = false;
             this.OnStopped();
         }
 

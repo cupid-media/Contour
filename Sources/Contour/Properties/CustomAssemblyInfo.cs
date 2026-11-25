@@ -5,3 +5,4 @@
 [assembly: InternalsVisibleTo("Contour.RabbitMq.Tests")]
 [assembly: InternalsVisibleTo("Contour.Configurator.Tests")]
 [assembly: InternalsVisibleTo("Contour.Testing")]
+[assembly: InternalsVisibleTo("Contour.UnitTests")]

@@ -714,6 +714,11 @@
         /// <exception cref="BusNotReadyException">Если шина не готова к работе, генерируется исключение.</exception>
         private void EnsureIsReady()
         {
+            if (this.IsShuttingDown && !this.IsReady)
+            {
+                throw new BusNotReadyException();
+            }
+
             if (!this.WhenReady.WaitOne(TimeSpan.FromSeconds(5)))
             {
                 throw new BusNotReadyException();

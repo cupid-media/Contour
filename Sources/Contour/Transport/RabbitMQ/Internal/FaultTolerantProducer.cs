@@ -30,11 +30,20 @@ namespace Contour.Transport.RabbitMQ.Internal
 
             for (var count = 0; count < this.attempts; count++)
             {
+                if (this.disposed)
+                {
+                    throw new ObjectDisposedException(typeof(FaultTolerantProducer).Name);
+                }
+
                 try
                 {
                     var producer = connectionKey == null ? this.selector.Next() : this.selector.PickByConnectionKey(connectionKey);
                     this.logger.Info($"Send attempt #{count + 1}/{this.attempts}: label=[{exchange.Out?.Label}], producer=[{producer.BrokerUrl}], isRequest={exchange.IsRequest}, connectionKey=[{connectionKey}]");
                     return this.TrySend(exchange, producer);
+                }
+                catch (ObjectDisposedException) when (this.disposed)
+                {
+                    throw;
                 }
                 catch (Exception ex)
                 {

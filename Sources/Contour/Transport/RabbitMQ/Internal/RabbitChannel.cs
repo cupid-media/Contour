@@ -50,6 +50,8 @@
 
         public string ConnectionKey { get; }
 
+        public bool IsOpen => this.Model?.IsOpen ?? false;
+
         /// <summary>
         /// The failed.
         /// </summary>
