@@ -8,6 +8,26 @@
     <LangVersion>latest</LangVersion>
   </PropertyGroup>
 
+  <!-- Packaging for the Cupid Media feed. The GitHub workflows read the Version element below. -->
+  <PropertyGroup>
+    <IsPackable>true</IsPackable>
+    <PackageId>Contour</PackageId>
+    <Version>7.0.0-pr1</Version>
+    <Title>Contour Service Bus</Title>
+    <Description>The package contains abstract interfaces of service bus and transport implementations for AMQP/RabbitMQ and Kafka</Description>
+    <PackageTags>contour servicebus bus</PackageTags>
+    <PackageReleaseNotes>Contour 7 with W3C trace context propagation</PackageReleaseNotes>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <RepositoryUrl>https://github.com/cupid-media/Contour</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PackageProjectUrl>https://github.com/cupid-media/Contour</PackageProjectUrl>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="..\..\README.md" Pack="true" PackagePath="" />
+  </ItemGroup>
+
   <ItemGroup>
     <PackageReference Include="Microsoft.Extensions.Logging" Version="8.0.0" />
     <PackageReference Include="RabbitMQ.Client" Version="7.1.2" />

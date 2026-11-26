@@ -1,0 +1,441 @@
+name: Publish NuGet Package
+
+# `main` publishes release versions (x.y.z), `prerelease` publishes pre-release ones (x.y.z-suffix).
+# The version is taken from <Version> in the project file and is never changed by the workflow.
+on:
+  push:
+    branches:
+      - "main"
+      - "prerelease"
+
+concurrency:
+  group: publish-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  DOTNET_VERSION: '10.0.x'
+  # The repository default branch is still the legacy `master`; Contour 7 lives in `main`.
+  DEFAULT_BRANCH: 'main'
+  PACKAGE_ID: 'Contour'
+  SOLUTION_FILE: './Contour.sln'
+  PROJECT_FILE: './Sources/Contour/Contour.csproj'
+  UNIT_TESTS_PROJECT: './Tests/Contour.Tests/Contour.Tests.csproj'
+  GITHUB_FEED: 'https://nuget.pkg.github.com/${{ github.repository_owner }}/index.json'
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  detect-changes:
+    runs-on: ubuntu-latest
+    outputs:
+      source_changed: ${{ steps.check.outputs.source_changed }}
+      docs_changed: ${{ steps.check.outputs.docs_changed }}
+      branch_name: ${{ steps.check.outputs.branch_name }}
+      branch_kind: ${{ steps.check.outputs.branch_kind }}
+      version_changed: ${{ steps.check.outputs.version_changed }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Detect changes
+        id: check
+        run: bash ./.github/scripts/detect_changes.sh
+        env:
+          EVENT_BEFORE: ${{ github.event.before }}
+
+  version:
+    runs-on: ubuntu-latest
+    needs: detect-changes
+    permissions:
+      contents: read
+      packages: read
+    env:
+      FAILURE_LOG: ${{ github.workspace }}/publish-version-failure.log
+    outputs:
+      version: ${{ steps.read.outputs.version }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Initialize failure log
+        run: rm -f "$FAILURE_LOG"
+
+      - name: Read version metadata
+        id: read
+        run: bash ./.github/scripts/read_version.sh
+
+      - name: Check version matches the branch
+        run: |
+          set -euo pipefail
+          exec > >(tee -a "$FAILURE_LOG") 2>&1
+          VERSION="${{ steps.read.outputs.version }}"
+          BRANCH_KIND="${{ needs.detect-changes.outputs.branch_kind }}"
+          if [[ "${BRANCH_KIND}" == "main" && ! "${VERSION}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "main publishes release versions only (x.y.z); current version is ${VERSION}."
+            exit 1
+          fi
+          if [[ "${BRANCH_KIND}" == "prerelease" && ! "${VERSION}" =~ ^[0-9]+\.[0-9]+\.[0-9]+-[0-9A-Za-z.-]+$ ]]; then
+            echo "prerelease publishes pre-release versions only (x.y.z-suffix); current version is ${VERSION}."
+            exit 1
+          fi
+          echo "Version ${VERSION} is valid for the ${BRANCH_KIND} branch."
+
+      - name: Check version bump
+        if: needs.detect-changes.outputs.source_changed == 'true'
+        env:
+          GITHUB_PUBLISH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        continue-on-error: true
+        run: |
+          set -uo pipefail
+          exec > >(tee -a "$FAILURE_LOG") 2>&1
+          CURRENT_VERSION="${{ steps.read.outputs.version }}"
+          echo "csproj version: ${CURRENT_VERSION}"
+          set +e
+          bash ./.github/scripts/check_version_bumped.sh nuget-feed "${CURRENT_VERSION}"
+          STATUS=$?
+          set -e
+          echo "${STATUS}" > version_check_status.txt
+          exit "${STATUS}"
+
+      - name: Capture version failure snippet
+        id: capture_version_snippet
+        if: always()
+        run: |
+          STATUS=$(cat version_check_status.txt 2>/dev/null || echo 0)
+          if [[ "${STATUS}" != "0" || "${{ job.status }}" == "failure" ]]; then
+            tail -n 80 "$FAILURE_LOG" > publish_version_failure_snippet.txt || echo "No version log output" > publish_version_failure_snippet.txt
+            echo "has_failure=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_failure=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Upload version failure snippet
+        if: always() && steps.capture_version_snippet.outputs.has_failure == 'true'
+        uses: actions/upload-artifact@v6
+        with:
+          name: publish-version-failure-snippet
+          path: publish_version_failure_snippet.txt
+          retention-days: 7
+
+      - name: Enforce version bump result
+        if: needs.detect-changes.outputs.source_changed == 'true'
+        run: |
+          STATUS=$(cat version_check_status.txt 2>/dev/null || echo 0)
+          if [[ "${STATUS}" != "0" ]]; then
+            echo "Version bump enforcement failed (status ${STATUS})."
+            exit "${STATUS}"
+          fi
+
+  build:
+    runs-on: ubuntu-latest
+    needs: [detect-changes, version]
+    env:
+      FAILURE_LOG: ${{ github.workspace }}/publish-build-failure.log
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Initialize failure log
+        run: rm -f "$FAILURE_LOG"
+
+      - name: Setup .NET (with cache)
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+          cache: true
+          cache-dependency-path: |
+            **/*.csproj
+            **/global.json
+            **/packages.lock.json
+
+      - name: Restore
+        run: |
+          set -euo pipefail
+          dotnet restore "${{ env.SOLUTION_FILE }}" |& tee -a "$FAILURE_LOG"
+
+      - name: Build
+        run: |
+          set -euo pipefail
+          dotnet build "${{ env.SOLUTION_FILE }}" --configuration Release --no-restore |& tee -a "$FAILURE_LOG"
+
+      - name: Unit tests
+        run: |
+          set -euo pipefail
+          dotnet test "${{ env.UNIT_TESTS_PROJECT }}" --configuration Release --no-build --verbosity normal |& tee -a "$FAILURE_LOG"
+
+      - name: Pack (include symbols)
+        run: |
+          set -euo pipefail
+          VERSION="${{ needs.version.outputs.version }}"
+          echo "Packing version: ${VERSION}"
+          dotnet pack "${{ env.PROJECT_FILE }}" \
+            --configuration Release \
+            --no-build \
+            -p:Version="${VERSION}" \
+            -p:PackageVersion="${VERSION}" \
+            -p:IncludeSymbols=true \
+            -p:SymbolPackageFormat=snupkg \
+            --output ./nupkgs |& tee -a "$FAILURE_LOG"
+
+          echo "Created packages:"
+          ls -la ./nupkgs |& tee -a "$FAILURE_LOG"
+
+      - name: Upload package artifacts
+        uses: actions/upload-artifact@v6
+        with:
+          name: nuget-packages-${{ github.run_number }}
+          path: ./nupkgs/
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Capture build failure snippet
+        if: failure()
+        run: |
+          tail -n 80 "$FAILURE_LOG" > publish_build_failure_snippet.txt || echo "No build log output" > publish_build_failure_snippet.txt
+
+      - name: Upload build failure snippet
+        if: failure()
+        uses: actions/upload-artifact@v6
+        with:
+          name: publish-build-failure-snippet
+          path: publish_build_failure_snippet.txt
+          retention-days: 7
+
+  publish:
+    runs-on: ubuntu-latest
+    needs: [detect-changes, version, build]
+    permissions:
+      contents: write
+      packages: write
+    env:
+      NUGET_PUBLISH_TOKEN: ${{ secrets.NUGET_PUBLISH_TOKEN }}
+      DEFAULT_GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      VERSION: ${{ needs.version.outputs.version }}
+      FAILURE_LOG: ${{ github.workspace }}/publish-job-failure.log
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Initialize failure log
+        run: rm -f "$FAILURE_LOG"
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+
+      - name: Download artifacts
+        uses: actions/download-artifact@v7
+        with:
+          name: nuget-packages-${{ github.run_number }}
+          path: ./packages
+
+      - name: Publish to GitHub Packages
+        run: |
+          set -euo pipefail
+          exec > >(tee -a "$FAILURE_LOG") 2>&1
+
+          PACKAGE_FILE="./packages/${PACKAGE_ID}.${VERSION}.nupkg"
+          if [[ ! -f "${PACKAGE_FILE}" ]]; then
+            echo "Package ${PACKAGE_FILE} was not built."
+            ls -la ./packages
+            exit 1
+          fi
+
+          # An organization token wins when it is configured; the workflow token is the default.
+          if [[ -n "${NUGET_PUBLISH_TOKEN}" ]]; then
+            echo "Using NUGET_PUBLISH_TOKEN from organization secrets"
+            TOKEN="${NUGET_PUBLISH_TOKEN}"
+          else
+            echo "Using GITHUB_TOKEN"
+            TOKEN="${DEFAULT_GITHUB_TOKEN}"
+          fi
+
+          echo "Publishing ${PACKAGE_FILE} to ${GITHUB_FEED}..."
+          dotnet nuget push "${PACKAGE_FILE}" \
+            --api-key "${TOKEN}" \
+            --source "${GITHUB_FEED}" \
+            --skip-duplicate
+          echo "Published ${PACKAGE_ID} ${VERSION} to GitHub Packages."
+
+      - name: Create and push tag
+        run: |
+          set -euo pipefail
+          exec > >(tee -a "$FAILURE_LOG") 2>&1
+          TAG="v${VERSION}"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          if git rev-parse -q --verify "refs/tags/${TAG}" >/dev/null; then
+            echo "Tag ${TAG} already exists"
+          else
+            git tag "${TAG}"
+            git push origin "refs/tags/${TAG}"
+          fi
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          exec > >(tee -a "$FAILURE_LOG") 2>&1
+          TAG="v${VERSION}"
+
+          if gh release view "${TAG}" >/dev/null 2>&1; then
+            echo "Release ${TAG} already exists"
+            exit 0
+          fi
+
+          RELEASE_ARGS=(--title "Release ${TAG}" --notes "Automated release of ${PACKAGE_ID} ${VERSION}." --verify-tag)
+          if [[ "${{ needs.detect-changes.outputs.branch_kind }}" != "main" ]]; then
+            RELEASE_ARGS+=(--prerelease)
+          fi
+
+          shopt -s nullglob
+          RELEASE_FILES=(./packages/*.nupkg ./packages/*.snupkg)
+
+          gh release create "${TAG}" "${RELEASE_FILES[@]}" "${RELEASE_ARGS[@]}"
+
+      - name: Capture publish failure snippet
+        if: failure()
+        run: |
+          tail -n 80 "$FAILURE_LOG" > publish_job_failure_snippet.txt || echo "No publish log output" > publish_job_failure_snippet.txt
+
+      - name: Upload publish failure snippet
+        if: failure()
+        uses: actions/upload-artifact@v6
+        with:
+          name: publish-job-failure-snippet
+          path: publish_job_failure_snippet.txt
+          retention-days: 7
+
+  summary:
+    runs-on: ubuntu-latest
+    needs: [detect-changes, version, build, publish]
+    if: always()
+    steps:
+      - name: Download version failure snippet
+        if: needs.version.result == 'failure'
+        continue-on-error: true
+        uses: actions/download-artifact@v7
+        with:
+          name: publish-version-failure-snippet
+          path: diagnostics/publish-version
+
+      - name: Download build failure snippet
+        if: needs.build.result == 'failure'
+        continue-on-error: true
+        uses: actions/download-artifact@v7
+        with:
+          name: publish-build-failure-snippet
+          path: diagnostics/publish-build
+
+      - name: Download publish failure snippet
+        if: needs.publish.result == 'failure'
+        continue-on-error: true
+        uses: actions/download-artifact@v7
+        with:
+          name: publish-job-failure-snippet
+          path: diagnostics/publish-job
+
+      - name: Generate summary
+        run: |
+          set -euo pipefail
+
+          BRANCH_KIND="${{ needs.detect-changes.outputs.branch_kind }}"
+          VERSION="${{ needs.version.outputs.version }}"
+          VERSION_RESULT="${{ needs.version.result }}"
+          BUILD_RESULT="${{ needs.build.result }}"
+          PUBLISH_RESULT="${{ needs.publish.result }}"
+
+          SOURCE_STATUS="No changes"
+          if [[ "${{ needs.detect-changes.outputs.source_changed }}" == "true" ]]; then
+            SOURCE_STATUS="Modified"
+          fi
+
+          DOCS_STATUS="No changes"
+          if [[ "${{ needs.detect-changes.outputs.docs_changed }}" == "true" ]]; then
+            DOCS_STATUS="Updated"
+          fi
+
+          VERSION_STATUS="Unchanged in csproj"
+          if [[ "${{ needs.detect-changes.outputs.version_changed }}" == "true" ]]; then
+            VERSION_STATUS="Bumped in csproj"
+          fi
+
+          if [[ "${BRANCH_KIND}" == "main" ]]; then
+            TARGETS="GitHub Packages + GitHub release"
+          else
+            TARGETS="GitHub Packages + GitHub pre-release"
+          fi
+
+          {
+            echo "## Publish Summary"
+            echo ""
+            echo "| Property | Value |"
+            echo "|----------|-------|"
+            echo "| Repository | ${{ github.repository }} |"
+            echo "| Branch | ${{ github.ref_name }} |"
+            echo "| Branch Kind | ${BRANCH_KIND} |"
+            echo "| Commit | \`${{ github.sha }}\` |"
+            echo "| Trigger | ${{ github.event_name }} |"
+            echo "| Source Changes | ${SOURCE_STATUS} |"
+            echo "| Documentation | ${DOCS_STATUS} |"
+            echo "| Version | ${VERSION:-unknown} |"
+            echo "| Version Status | ${VERSION_STATUS} |"
+            echo "| Version Job | ${VERSION_RESULT} |"
+            echo "| Build Job | ${BUILD_RESULT} |"
+            echo "| Publish Job | ${PUBLISH_RESULT} |"
+            echo "| Targets | ${TARGETS} |"
+            if [[ "${PUBLISH_RESULT}" == "success" ]]; then
+              echo ""
+              echo "Release tag: \`v${VERSION}\`"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          print_snippet() {
+            local title="$1"
+            local path="$2"
+            if [[ -s "${path}" ]]; then
+              {
+                echo ""
+                echo "<details><summary>${title}</summary>"
+                echo ""
+                echo '```'
+                cat "${path}"
+                echo '```'
+                echo "</details>"
+              } >> "$GITHUB_STEP_SUMMARY"
+            fi
+          }
+
+          if [[ "${VERSION_RESULT}" != "success" || "${BUILD_RESULT}" != "success" || "${PUBLISH_RESULT}" != "success" ]]; then
+            {
+              echo ""
+              echo "### Failure Details"
+              echo ""
+            } >> "$GITHUB_STEP_SUMMARY"
+            if [[ "${VERSION_RESULT}" != "success" ]]; then
+              echo "- Version job concluded with status: \`${VERSION_RESULT}\`." >> "$GITHUB_STEP_SUMMARY"
+              print_snippet "Version check excerpt" "diagnostics/publish-version/publish_version_failure_snippet.txt"
+            fi
+            if [[ "${BUILD_RESULT}" != "success" ]]; then
+              echo "- Build job concluded with status: \`${BUILD_RESULT}\`." >> "$GITHUB_STEP_SUMMARY"
+              print_snippet "Build log excerpt" "diagnostics/publish-build/publish_build_failure_snippet.txt"
+            fi
+            if [[ "${PUBLISH_RESULT}" != "success" ]]; then
+              echo "- Publish job concluded with status: \`${PUBLISH_RESULT}\`." >> "$GITHUB_STEP_SUMMARY"
+              print_snippet "Publish log excerpt" "diagnostics/publish-job/publish_job_failure_snippet.txt"
+            fi
+          fi
