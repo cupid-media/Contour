@@ -74,6 +74,21 @@ public class Headers
     public static readonly string SentTimestamp = "x-sent-timestamp";
 
     /// <summary>
+    /// W3C Trace Context: идентификаторы трассировки и родительского спана.
+    /// </summary>
+    public static readonly string TraceParent = "traceparent";
+
+    /// <summary>
+    /// W3C Trace Context: данные трассировки, специфичные для вендора.
+    /// </summary>
+    public static readonly string TraceState = "tracestate";
+
+    /// <summary>
+    /// Признак того, что сообщение переслано обработчиком другого сообщения.
+    /// </summary>
+    public static readonly string Forwarded = "x-forwarded";
+
+    /// <summary>
     /// Коллекция заголовков, значения которых менять запрещено
     /// </summary>
     private static readonly HashSet<string> NotImmutableHeaders =

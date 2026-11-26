@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Concurrent;
+using System.Collections.Generic;
 using System.Text;
 using System.Threading.Tasks;
 using Contour.Configuration;
@@ -168,6 +169,43 @@ public class KafkaRequestReplyTests
         replyHeaders[Headers.CorrelationId].Should().Be(
             requestHeaders[Headers.CorrelationId],
             "the reply must be matched to its request by correlation id");
+
+        await bus.Stop();
+    }
+
+    [Test]
+    public async Task Reply_continues_the_trace_of_the_request()
+    {
+        const string TraceId = "12345678901234567890123456789012";
+        const string RequestSpanId = "1234567890123456";
+
+        var bus = await CreateBus(cfg =>
+        {
+            cfg.Route(RequestTopic).WithDefaultCallbackEndpoint();
+            cfg.On(RequestTopic).WithReplies().ReactWith(new UppercaseResponder());
+        });
+
+        await bus.Start();
+
+        var options = new RequestOptions
+        {
+            AdditionalHeaders = new Dictionary<string, object>
+            {
+                [Headers.TraceParent] = $"00-{TraceId}-{RequestSpanId}-01",
+                [Headers.TraceState] = "rojo=00f067aa0ba902b7"
+            }
+        };
+
+        await bus.RequestAsync<string, string>(RequestTopic, "ping", options).WaitAsync(TimeSpan.FromSeconds(10));
+
+        var reply = this.broker.Published(ReplyTopic).Should().ContainSingle().Subject;
+        var replyHeaders = Contour.Transport.Kafka.Internal.KafkaHeaderConverter.FromKafka(reply.Headers);
+
+        var traceParent = Headers.GetString(replyHeaders, Headers.TraceParent).Split('-');
+        traceParent.Should().HaveCount(4);
+        traceParent[1].Should().Be(TraceId, "the reply belongs to the trace of its request");
+        traceParent[2].Should().NotBe(RequestSpanId, "the reply is a span of its own");
+        Headers.GetString(replyHeaders, Headers.TraceState).Should().Be("rojo=00f067aa0ba902b7");
 
         await bus.Stop();
     }

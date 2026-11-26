@@ -184,6 +184,7 @@ internal class KafkaDelivery : IDelivery
         Contour.Headers.ApplyBreadcrumbs(headers, EndpointAddress);
         Contour.Headers.ApplyOriginalMessageId(headers);
         Contour.Headers.ApplySentTimestamp(headers);
+        CopyTraceContext(message.Headers, headers);
 
         return ReplySender.SendRaw(MessageLabel.From(replyTopic), message.Payload, headers);
     }
@@ -237,6 +238,7 @@ internal class KafkaDelivery : IDelivery
             .ToDictionary(h => h.Key, h => h.Value);
 
         headers[Contour.Headers.MessageLabel] = Topic;
+        headers[Contour.Headers.Forwarded] = true;
 
         Contour.Headers.ApplyBreadcrumbs(headers, EndpointAddress);
         Contour.Headers.ApplyOriginalMessageId(headers);
@@ -248,6 +250,28 @@ internal class KafkaDelivery : IDelivery
         }
 
         return headers;
+    }
+
+    /// <summary>
+    ///   Переносит в заголовки ответа контекст трассировки, который обработчик положил в ответное
+    ///   сообщение: остальные заголовки ответа собираются явно, см. <see cref="ReplyWithAsync{TReply}"/>.
+    /// </summary>
+    private static void CopyTraceContext(IDictionary<string, object> source, IDictionary<string, object> target)
+    {
+        if (source == null)
+        {
+            return;
+        }
+
+        if (source.TryGetValue(Contour.Headers.TraceParent, out var traceParent))
+        {
+            target[Contour.Headers.TraceParent] = traceParent;
+        }
+
+        if (source.TryGetValue(Contour.Headers.TraceState, out var traceState))
+        {
+            target[Contour.Headers.TraceState] = traceState;
+        }
     }
 
     private void EnsureReplySender(string operation)

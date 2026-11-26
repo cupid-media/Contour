@@ -5,6 +5,7 @@ using System.Threading;
 using System.Threading.Tasks;
 
 using Microsoft.Extensions.Logging;
+using Contour.Tracing;
 using Contour.Transport.RabbitMQ.Internal;
 
 namespace Contour.Sending;
@@ -198,6 +199,9 @@ internal abstract class AbstractSender<TConfiguration, TBus, TProducer> : ISende
         Headers.ApplyTtl(outputHeaders, options.Ttl ?? Configuration.Ttl);
         Headers.ApplyAdditionalHeaders(outputHeaders, options.AdditionalHeaders);
         Headers.ApplySentTimestamp(outputHeaders);
+
+        // Contour 3.x did this in W3CTraceContextFilter, registered for every sender by default.
+        W3CTraceContextProvider.InjectTraceContext(outputHeaders, null);
 
         if (!outputHeaders.ContainsKey(Headers.CorrelationId))
         {

@@ -2,6 +2,7 @@
 using System.Collections.Generic;
 using System.Threading.Tasks;
 using Contour.Helpers;
+using Contour.Tracing;
 
 namespace Contour.Receiving;
 
@@ -154,6 +155,8 @@ internal class DefaultConsumingContext<T> : IConsumingContext<T>, IDeliveryConte
 
         if (Delivery.CanReply)
         {
+            W3CTraceContextProvider.InjectTraceContext(headers, Message);
+
             await Delivery.ReplyWithAsync(new Message<TResponse>(MessageLabel.Empty, response, headers));
         }
     }

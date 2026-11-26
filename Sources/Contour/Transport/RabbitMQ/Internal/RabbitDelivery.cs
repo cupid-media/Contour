@@ -102,6 +102,7 @@ internal class RabbitDelivery : IDelivery
         }
         Contour.Headers.ApplyBreadcrumbs(headers, this.bus.Endpoint.Address);
         Contour.Headers.ApplyOriginalMessageId(headers);
+        headers[Contour.Headers.Forwarded] = true;
 
         // TODO это костыль, как и само использование константы "document.contour.failed", возможно правильно было бы иметь отдельный метод ForwardToFault
         return this.bus.EmitAsync(label, payload, new PublishingOptions
