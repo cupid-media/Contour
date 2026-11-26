@@ -1,8 +1,6 @@
 using System;
 using System.Collections.Generic;
-using System.Diagnostics;
 using System.Globalization;
-using System.Security.Cryptography;
 using System.Text;
 
 namespace Contour.Tracing;
@@ -12,6 +10,8 @@ namespace Contour.Tracing;
 /// </summary>
 public static class W3CTraceContextProvider
 {
+    private static readonly Random Random = new Random();
+
     /// <summary>
     /// Extracts W3C trace context (traceparent and tracestate) from message headers.
     /// </summary>
@@ -20,15 +20,19 @@ public static class W3CTraceContextProvider
         traceParent = null;
         traceState = null;
 
-        if (!TryGetTraceContext(message?.Headers, out traceParent, out traceState))
+        if (!TryGetTraceParent(message, out traceParent))
             return false;
+
+        if (message.Headers.TryGetValue(Headers.TraceState, out var traceStateObj))
+        {
+            traceState = traceStateObj as string ?? Encoding.UTF8.GetString((byte[])traceStateObj);
+        }
 
         return true;
     }
 
     /// <summary>
-    /// Writes trace context into outgoing headers: the current activity when there is one, otherwise
-    /// the context of the source message or the one already copied into the headers.
+    /// Copies trace context from the source message into outgoing headers.
     /// Creates a new span id when reusing an existing traceparent.
     /// </summary>
     public static void InjectTraceContext(IDictionary<string, object> headers, IMessage sourceMessage)
@@ -38,20 +42,28 @@ public static class W3CTraceContextProvider
 
         try
         {
-            if (TryInjectCurrentActivity(headers))
+            if (sourceMessage?.Headers == null)
                 return;
 
-            if (!TryGetTraceContext(sourceMessage?.Headers, out var traceParent, out var traceState) &&
-                !TryGetTraceContext(headers, out traceParent, out traceState))
+            if (TryGetTraceParent(sourceMessage, out var traceParent))
             {
-                ClearTraceContext(headers);
-                return;
+                if (TryParseW3CTraceParent(traceParent, out var traceId, out var _, out var traceFlags))
+                {
+                    var newSpanId = GenerateSpanId();
+                    var newTraceParent = $"00-{traceId}-{newSpanId}-{traceFlags:x2}";
+                    headers[Headers.TraceParent] = newTraceParent;
+                }
+                else
+                {
+                    headers[Headers.TraceParent] = traceParent;
+                }
             }
 
-            TryParseW3CTraceParent(traceParent, out var traceId, out var _, out var traceFlags);
-
-            headers[Headers.TraceParent] = $"00-{traceId}-{GenerateSpanId()}-{traceFlags:x2}";
-            SetTraceState(headers, traceState);
+            if (sourceMessage.Headers.TryGetValue(Headers.TraceState, out var traceStateObj))
+            {
+                var traceState = traceStateObj as string ?? Encoding.UTF8.GetString((byte[])traceStateObj);
+                headers[Headers.TraceState] = traceState;
+            }
         }
         catch (Exception)
         {
@@ -59,42 +71,27 @@ public static class W3CTraceContextProvider
         }
     }
 
-    private static bool TryGetTraceContext(IDictionary<string, object> headers, out string traceParent, out string traceState)
+    private static bool TryGetTraceParent(IMessage message, out string traceParent)
     {
         traceParent = null;
-        traceState = null;
 
-        if (!TryGetHeaderString(headers, Headers.TraceParent, out traceParent))
+        if (message?.Headers == null || !message.Headers.TryGetValue(Headers.TraceParent, out var traceParentObj))
             return false;
 
-        if (!TryParseW3CTraceParent(traceParent, out var _, out var _, out var _))
-            return false;
-
-        TryGetHeaderString(headers, Headers.TraceState, out traceState);
-
-        return true;
-    }
-
-    private static bool TryGetHeaderString(IDictionary<string, object> headers, string key, out string value)
-    {
-        value = null;
-
-        if (headers == null || !headers.TryGetValue(key, out var headerValue))
-            return false;
-
-        switch (headerValue)
+        switch (traceParentObj)
         {
             case string str:
-                value = str;
+                traceParent = str;
                 break;
             case byte[] bytes:
-                value = Encoding.UTF8.GetString(bytes);
+                traceParent = Encoding.UTF8.GetString(bytes);
                 break;
             default:
-                return false;
+                traceParent = null;
+                break;
         }
 
-        return !string.IsNullOrWhiteSpace(value);
+        return !string.IsNullOrWhiteSpace(traceParent);
     }
 
     private static bool TryParseW3CTraceParent(string traceParent, out string traceId, out string spanId, out byte traceFlags)
@@ -110,11 +107,11 @@ public static class W3CTraceContextProvider
         if (parts.Length != 4 || parts[0] != "00")
             return false;
 
-        if (parts[1].Length != 32 || !IsValidHexString(parts[1]) || IsAllZeros(parts[1]))
+        if (parts[1].Length != 32 || !IsValidHexString(parts[1]))
             return false;
         traceId = parts[1];
 
-        if (parts[2].Length != 16 || !IsValidHexString(parts[2]) || IsAllZeros(parts[2]))
+        if (parts[2].Length != 16 || !IsValidHexString(parts[2]))
             return false;
         spanId = parts[2];
 
@@ -122,37 +119,6 @@ public static class W3CTraceContextProvider
             return false;
 
         return true;
-    }
-
-    private static bool TryInjectCurrentActivity(IDictionary<string, object> headers)
-    {
-        var activity = Activity.Current;
-        if (activity == null ||
-            IsAllZeros(activity.TraceId.ToString()) ||
-            IsAllZeros(activity.SpanId.ToString()))
-            return false;
-
-        headers[Headers.TraceParent] = $"00-{activity.TraceId}-{activity.SpanId}-{(byte)activity.ActivityTraceFlags:x2}";
-        SetTraceState(headers, activity.TraceStateString);
-
-        return true;
-    }
-
-    private static void SetTraceState(IDictionary<string, object> headers, string traceState)
-    {
-        if (string.IsNullOrWhiteSpace(traceState))
-        {
-            headers.Remove(Headers.TraceState);
-            return;
-        }
-
-        headers[Headers.TraceState] = traceState;
-    }
-
-    private static void ClearTraceContext(IDictionary<string, object> headers)
-    {
-        headers.Remove(Headers.TraceParent);
-        headers.Remove(Headers.TraceState);
     }
 
     private static bool IsValidHexString(string hex)
@@ -165,36 +131,13 @@ public static class W3CTraceContextProvider
         return true;
     }
 
-    private static bool IsAllZeros(string hex)
-    {
-        foreach (var c in hex)
-        {
-            if (c != '0')
-                return false;
-        }
-
-        return true;
-    }
-
     private static string GenerateSpanId()
     {
-        return GenerateHexIdentifier(8);
-    }
-
-    private static string GenerateHexIdentifier(int byteCount)
-    {
-        var bytes = new byte[byteCount];
-        string value;
-        using (var random = RandomNumberGenerator.Create())
+        var bytes = new byte[8];
+        lock (Random)
         {
-            do
-            {
-                random.GetBytes(bytes);
-                value = BitConverter.ToString(bytes).Replace("-", "").ToLowerInvariant();
-            }
-            while (IsAllZeros(value));
+            Random.NextBytes(bytes);
         }
-
-        return value;
+        return BitConverter.ToString(bytes).Replace("-", "").ToLowerInvariant();
     }
 }
