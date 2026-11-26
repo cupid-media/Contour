@@ -1,88 +1,69 @@
-﻿// --------------------------------------------------------------------------------------------------------------------
-// <copyright file="FaultedConsumingContext.cs" company="">
-//   
-// </copyright>
-// <summary>
-//   The faulted consuming context.
-// </summary>
-// --------------------------------------------------------------------------------------------------------------------
+﻿using System.Threading.Tasks;
+using Contour.Helpers;
 
-namespace Contour.Receiving
+namespace Contour.Receiving;
+
+/// <summary>
+/// The faulted consuming context.
+/// </summary>
+internal abstract class FaultedConsumingContext : IFaultedConsumingContext
 {
     /// <summary>
-    /// The faulted consuming context.
+    /// Инициализирует новый экземпляр класса <see cref="FaultedConsumingContext"/>.
     /// </summary>
-    internal abstract class FaultedConsumingContext : IFaultedConsumingContext
+    /// <param name="delivery">
+    /// The delivery.
+    /// </param>
+    protected FaultedConsumingContext(IDelivery delivery)
     {
-        #region Constructors and Destructors
+        Delivery = delivery;
+    }
 
-        /// <summary>
-        /// Инициализирует новый экземпляр класса <see cref="FaultedConsumingContext"/>.
-        /// </summary>
-        /// <param name="delivery">
-        /// The delivery.
-        /// </param>
-        protected FaultedConsumingContext(IDelivery delivery)
-        {
-            this.Delivery = delivery;
-        }
+    /// <summary>
+    /// Gets the delivery.
+    /// </summary>
+    public IDelivery Delivery { get; private set; }
 
-        #endregion
+    /// <summary>
+    /// The accept.
+    /// </summary>
+    public Task AcceptAsync()
+    {
+        return Delivery.AcceptAsync();
+    }
 
-        #region Public Properties
+    /// <summary>
+    /// The build fault message.
+    /// </summary>
+    /// <returns>
+    /// The <see cref="FaultMessage"/>.
+    /// </returns>
+    public abstract FaultMessage BuildFaultMessage();
 
-        /// <summary>
-        /// Gets the delivery.
-        /// </summary>
-        public IDelivery Delivery { get; private set; }
+    /// <summary>
+    /// The forward.
+    /// </summary>
+    /// <param name="label">
+    /// The label.
+    /// </param>
+    /// <param name="message">
+    /// The message.
+    /// </param>
+    /// <typeparam name="T">
+    /// </typeparam>
+    public Task ForwardAsync<T>(string label, T message) where T : class
+    {
+        return Delivery.ForwardAsync(label.ToMessageLabel(), message);
+    }
 
-        #endregion
-
-        #region Public Methods and Operators
-
-        /// <summary>
-        /// The accept.
-        /// </summary>
-        public void Accept()
-        {
-            this.Delivery.Accept();
-        }
-
-        /// <summary>
-        /// The build fault message.
-        /// </summary>
-        /// <returns>
-        /// The <see cref="FaultMessage"/>.
-        /// </returns>
-        public abstract FaultMessage BuildFaultMessage();
-
-        /// <summary>
-        /// The forward.
-        /// </summary>
-        /// <param name="label">
-        /// The label.
-        /// </param>
-        /// <param name="message">
-        /// The message.
-        /// </param>
-        /// <typeparam name="T">
-        /// </typeparam>
-        public void Forward<T>(string label, T message) where T : class
-        {
-            this.Delivery.Forward(label.ToMessageLabel(), message);
-        }
-
-        /// <summary>
-        /// The reject.
-        /// </summary>
-        /// <param name="requeue">
-        /// The requeue.
-        /// </param>
-        public void Reject(bool requeue)
-        {
-            this.Delivery.Reject(requeue);
-        }
-
-        #endregion
+    /// <summary>
+    /// The reject.
+    /// </summary>
+    /// <param name="requeue">
+    /// The requeue.
+    /// </param>
+    public Task RejectAsync(bool requeue)
+    {
+        return Delivery.RejectAsync(requeue);
     }
 }

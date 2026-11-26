@@ -1,68 +1,22 @@
-﻿// --------------------------------------------------------------------------------------------------------------------
-// <copyright file="LambdaFailedDeliveryStrategy.cs" company="">
-//   
-// </copyright>
-// <summary>
-//   The lambda failed delivery strategy.
-// </summary>
-// --------------------------------------------------------------------------------------------------------------------
+﻿using System.Threading.Tasks;
+using System;
+using Microsoft.Extensions.Logging;
 
-namespace Contour.Receiving
+namespace Contour.Receiving;
+
+public class LambdaFailedDeliveryStrategy(Func<IFailedConsumingContext, Task> handlerAction) : IFailedDeliveryStrategy
 {
-    using System;
+    private static readonly ILogger Log = LogManager.GetLogger<LambdaFailedDeliveryStrategy>();
 
-    using Common.Logging;
-
-    /// <summary>
-    /// The lambda failed delivery strategy.
-    /// </summary>
-    public class LambdaFailedDeliveryStrategy : IFailedDeliveryStrategy
+    public async Task Handle(IFailedConsumingContext failedConsumingContext)
     {
-        #region Fields
-
-        /// <summary>
-        /// The _handler action.
-        /// </summary>
-        private readonly Action<IFailedConsumingContext> _handlerAction;
-
-        #endregion
-
-        #region Constructors and Destructors
-
-        /// <summary>
-        /// Инициализирует новый экземпляр класса <see cref="LambdaFailedDeliveryStrategy"/>.
-        /// </summary>
-        /// <param name="handlerAction">
-        /// The handler action.
-        /// </param>
-        public LambdaFailedDeliveryStrategy(Action<IFailedConsumingContext> handlerAction)
+        try
         {
-            this._handlerAction = handlerAction;
+            await handlerAction(failedConsumingContext);
         }
-
-        #endregion
-
-        #region Public Methods and Operators
-
-        /// <summary>
-        /// The handle.
-        /// </summary>
-        /// <param name="failedConsumingContext">
-        /// The failed consuming context.
-        /// </param>
-        public void Handle(IFailedConsumingContext failedConsumingContext)
+        catch (Exception ex)
         {
-            try
-            {
-                this._handlerAction(failedConsumingContext);
-            }
-            catch (Exception ex)
-            {
-                LogManager.GetCurrentClassLogger().
-                    ErrorFormat("Unable to handle failed message [{0}].", ex, failedConsumingContext.Delivery.Label);
-            }
+            Log.LogError(ex, "Unable to handle failed message [{Label}]", failedConsumingContext.Delivery.Label);
         }
-
-        #endregion
     }
 }

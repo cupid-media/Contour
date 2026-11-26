@@ -1,40 +1,34 @@
-﻿using Contour.Receiving;
+﻿using System;
 
-namespace Contour.Sending
+namespace Contour.Sending;
+
+/// <summary>
+/// Конфигурация отправителя.
+/// </summary>
+public interface ISenderConfiguration
 {
     /// <summary>
-    /// Конфигурация отправителя.
+    /// Псевдоним для метки отправляемых сообщений.
     /// </summary>
-    public interface ISenderConfiguration
-    {
-        /// <summary>
-        /// Псевдоним для метки отправляемых сообщений.
-        /// </summary>
-        string Alias { get; }
+    string Key { get; }
 
-        /// <summary>
-        /// Конфигурация получателя ответных сообщений.
-        /// </summary>
-        IReceiverConfiguration CallbackConfiguration { get; }
+    /// <summary>
+    /// Метка отправляемых сообщений.
+    /// </summary>
+    MessageLabel Label { get; }
 
-        /// <summary>
-        /// Метка отправляемых сообщений.
-        /// </summary>
-        MessageLabel Label { get; }
+    IIncomingMessageHeaderStorage IncomingMessageHeaderStorage { get; }
 
-        /// <summary>
-        /// Настройки отправителя.
-        /// </summary>
-        SenderOptions Options { get; }
+    bool Persistently { get; }
 
-        /// <summary>
-        /// Определяет необходимо ли использовать обратный вызов для обработки ответных сообщений.
-        /// </summary>
-        bool RequiresCallback { get; }
+    bool Delayed { get; }
 
-        /// <summary>
-        /// Проверяет корректность конфигурации отправителя.
-        /// </summary>
-        void Validate();
-    }
+    TimeSpan? Ttl { get; }
+
+    TimeSpan? RequestTimeout { get; }
+
+    /// <summary>
+    /// Определяет необходимо ли использовать обратный вызов для обработки ответных сообщений.
+    /// </summary>
+    bool RequiresCallback { get; }
 }

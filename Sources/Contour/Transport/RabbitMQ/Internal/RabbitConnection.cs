@@ -7,274 +7,288 @@ using System.Reflection;
 using System.Threading;
 using System.Threading.Tasks;
 
-using Common.Logging;
-
+using Microsoft.Extensions.Logging;
+using Contour.Helpers;
 using RabbitMQ.Client;
+using RabbitMQ.Client.Events;
 using RabbitMQ.Client.Exceptions;
 
 using INativeConnection = RabbitMQ.Client.IConnection;
 
-namespace Contour.Transport.RabbitMQ.Internal
+namespace Contour.Transport.RabbitMQ.Internal;
+
+internal class RabbitConnection : IRabbitConnection
 {
-    internal class RabbitConnection : IRabbitConnection
+    private const int ConnectionTimeout = 3000;
+    private const int OperationTimeout = 500;
+    private readonly SemaphoreSlim semaphore = new(1, 1);
+    private readonly ILogger logger = LogManager.GetLogger<RabbitConnection>();
+    private readonly IEndpoint endpoint;
+    private readonly RabbitBus bus;
+    private readonly ConnectionFactory connectionFactory;
+    private INativeConnection connection;
+
+    private readonly Dictionary<string, RabbitChannel> sharedChannels = new();
+
+    public RabbitConnection(IEndpoint endpoint, string connectionString, RabbitBus bus)
     {
-        private const int ConnectionTimeout = 3000;
-        private const int OperationTimeout = 500;
-        private readonly object syncRoot = new object();
-        private readonly ILog logger = LogManager.GetLogger<RabbitConnection>();
-        private readonly IEndpoint endpoint;
-        private readonly IBusContext busContext;
-        private readonly ConnectionFactory connectionFactory;
-        private INativeConnection connection;
+        Id = Guid.NewGuid();
+        this.endpoint = endpoint;
+        ConnectionString = connectionString;
+        this.bus = bus;
 
-        public RabbitConnection(IEndpoint endpoint, string connectionString, IBusContext busContext)
+        ConnectionKey = GetConnectionKey(connectionString);
+
+        var clientProperties = new Dictionary<string, object>
         {
-            this.Id = Guid.NewGuid();
-            this.endpoint = endpoint;
-            this.ConnectionString = connectionString;
-            this.busContext = busContext;
+            { "Endpoint", this.endpoint.Address },
+            { "Machine", Environment.MachineName },
+            { "Location", Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location) },
+            { "ConnectionId", Id.ToString() }
+        };
 
-            this.ConnectionKey = GetConnectionKey(connectionString);
+        this.connectionFactory = new ConnectionFactory
+        {
+            Uri = new Uri(ConnectionString),
+            AutomaticRecoveryEnabled = false,
+            ClientProperties = clientProperties,
+            RequestedConnectionTimeout = TimeSpan.FromMilliseconds(ConnectionTimeout),
+            ConsumerDispatchConcurrency = 1
+        };
+    }
 
-            var clientProperties = new Dictionary<string, object>
-            {
-                { "Endpoint", this.endpoint.Address },
-                { "Machine", Environment.MachineName },
-                { "Location", Path.GetDirectoryName(Assembly.GetExecutingAssembly().CodeBase) },
-                { "ConnectionId", this.Id.ToString() }
-            };
+    public Guid Id { get; }
 
-            this.connectionFactory = new ConnectionFactory
-            {
-                Uri = new Uri(this.ConnectionString),
-                AutomaticRecoveryEnabled = false,
-                ClientProperties = clientProperties,
-                RequestedConnectionTimeout = TimeSpan.FromMilliseconds(ConnectionTimeout)
-            };
+    public bool IsActive { get; private set; }
+
+    public bool IsOpen => this.connection?.IsOpen ?? false;
+
+    public string ConnectionString { get; }
+
+    public string ConnectionKey { get; }
+
+    public bool IsBlocked { get; private set; }
+
+    public async Task Open(CancellationToken token)
+    {
+        await this.semaphore.ExecuteWithCondition(async () =>
+        {
+            await OpenInternal(token);
+            IsActive = true;
+            return 0;
+        }, logger: this.logger, cancellationToken: token);
+    }
+
+    private async Task OpenInternal(CancellationToken token)
+    {
+        if (IsOpen)
+        {
+            this.logger.LogTrace("Connection [{ConnectionId}] is already open", Id);
+            return;
         }
 
-        public event EventHandler Opened;
+        this.logger.LogInformation("Connecting to RabbitMQ using [{ConnectionString}]", ConnectionString);
 
-        public event EventHandler Closed;
-
-        public event EventHandler Disposed;
-
-        public Guid Id { get; }
-
-        public string ConnectionString { get; }
-
-        public string ConnectionKey { get; }
-
-        public void Open(CancellationToken token)
+        var retryCount = 0;
+        while (true)
         {
-            lock (this.syncRoot)
+            token.ThrowIfCancellationRequested();
+
+            INativeConnection con = null;
+            try
             {
-                if (this.connection?.IsOpen ?? false)
+                con = await this.connectionFactory.CreateConnectionAsync(token);
+                con.ConnectionShutdownAsync += OnConnectionShutdown;
+
+                con.ConnectionBlockedAsync += OnConnectionBlocked;
+                con.ConnectionUnblockedAsync += OnConnectionUnblocked;
+                this.connection = con;
+                this.logger.LogInformation("Connection [{ConnectionId}] opened at [{Endpoint}]", Id, this.connection.Endpoint);
+                return;
+            }
+            catch (Exception ex)
+            {
+                if (con != null)
                 {
-                    this.logger.Trace($"Connection [{this.Id}] is already open");
-                    return;
+                    con.ConnectionShutdownAsync -= OnConnectionShutdown;
+                    await con.AbortAsync(TimeSpan.FromMilliseconds(OperationTimeout));
                 }
 
-                this.logger.Info($"Connecting to RabbitMQ using [{this.ConnectionString}]");
+                var secondsToRetry = Math.Min(10, retryCount);
 
-                var retryCount = 0;
-                while (true)
+                this.logger.LogWarning(ex, "Unable to connect to RabbitMQ on connection string: [{ConnectionString}]. Retrying in {SecondsToRetry} seconds...", ConnectionString, secondsToRetry);
+
+                await Task.Delay(TimeSpan.FromSeconds(secondsToRetry), cancellationToken: token);
+                retryCount++;
+            }
+        }
+    }
+
+    private Task OnConnectionBlocked(object sender, ConnectionBlockedEventArgs e)
+    {
+        this.logger.LogInformation("OnConnectionBlocked {Sender}. Reason: {Reason}", sender, e.Reason);
+        IsBlocked = true;
+        return Task.CompletedTask;
+    }
+
+    private Task OnConnectionUnblocked(object sender, AsyncEventArgs asyncEventArgs)
+    {
+        this.logger.LogInformation("OnConnectionUnblocked {Sender}", sender);
+        IsBlocked = false;
+        return Task.CompletedTask;
+    }
+
+    public Task<RabbitChannel> OpenChannel(CreateChannelOptions options = null, CancellationToken cancellationToken = default)
+    {
+        return this.semaphore.ExecuteWithCondition(async () => await OpenChannelInternal(options, cancellationToken), logger: this.logger, cancellationToken: cancellationToken).AsTask();
+    }
+
+    public async Task<RabbitChannel> OpenSharedChannel(string key, CreateChannelOptions options = null, CancellationToken cancellationToken = default)
+    {
+        if (this.sharedChannels.TryGetValue(key, out var channel) && channel.IsOpen)
+        {
+            return channel;
+        }
+
+        return await this.semaphore.ExecuteWithCondition(async () =>
+        {
+            if (this.sharedChannels.TryGetValue(key, out channel) && channel.IsOpen)
+            {
+                return channel;
+            }
+
+            if (channel != null)
+            {
+                this.logger.LogTrace("An attempt to open a new shared channel with key '{Key}' while the old one is not removed from shared cache", key);
+                this.sharedChannels.Remove(key);
+            }
+
+            var newChannel = await OpenChannelInternal(options, cancellationToken);
+
+            this.sharedChannels.Add(key, newChannel);
+
+            return newChannel;
+        }, logger: this.logger, cancellationToken: cancellationToken);
+    }
+
+    public async Task Close()
+    {
+        IsActive = false;
+        await this.semaphore.ExecuteWithCondition(async () =>
+        {
+            await Task.WhenAll(this.sharedChannels.Select(c => c.Value.DisposeAsync().AsTask()));
+            this.sharedChannels.Clear();
+
+            if (this.connection != null)
+            {
+                if (this.connection.CloseReason == null)
                 {
-                    token.ThrowIfCancellationRequested();
-
-                    INativeConnection con = null;
+                    this.logger.LogTrace("[{Endpoint}]: closing connection", this.endpoint);
                     try
                     {
-                        con = this.connectionFactory.CreateConnection();
-                        con.ConnectionShutdown += this.OnConnectionShutdown;
-                        
-                        con.ConnectionBlocked += OnConnectionBlocked;
-                        con.ConnectionUnblocked += OnConnectionUnblocked;
-                        this.connection = con;
-                        this.OnOpened();
-                        this.logger.Info($"Connection [{this.Id}] opened at [{this.connection.Endpoint}]");
-
-                        return;
-                    }
-                    catch (Exception ex)
-                    {
-                        if (con != null)
+                        await this.connection.CloseAsync(TimeSpan.FromMilliseconds(OperationTimeout));
+                        if (this.connection.CloseReason != null)
                         {
-                            con.ConnectionShutdown -= this.OnConnectionShutdown;
-                            con.Abort(TimeSpan.FromMilliseconds(OperationTimeout));
+                            await this.connection.AbortAsync(TimeSpan.FromMilliseconds(OperationTimeout));
                         }
-
-                        var secondsToRetry = Math.Min(10, retryCount);
-
-                        this.logger.Warn(m => m("Unable to connect to RabbitMQ on connection string: [{1}]. Retrying in {0} seconds...", secondsToRetry, this.ConnectionString), ex);
-                        
-                        Thread.Sleep(TimeSpan.FromSeconds(secondsToRetry));
-                        retryCount++;
+                    }
+                    catch (AlreadyClosedException ex)
+                    {
+                        this.logger.LogWarning("[{Endpoint}]: connection is already closed: {Message}", this.endpoint, ex.Message);
                     }
                 }
             }
-        }
 
-        public bool IsBlocked { get; private set; }
+            return 0;
+        }, logger: this.logger);
+    }
 
-        private void OnConnectionBlocked(object sender, global::RabbitMQ.Client.Events.ConnectionBlockedEventArgs e)
+    public async Task Abort(CancellationToken token)
+    {
+        IsActive = false;
+        await this.semaphore.ExecuteWithCondition(async () =>
         {
-            // todo: reduce logging level later
-            this.logger.Warn(m => m($"OnConnectionBlocked {sender}. Reason: {e.Reason}"));
-            IsBlocked = true;
-        }
-
-        private void OnConnectionUnblocked(object sender, EventArgs e)
-        {
-            // todo: reduce logging level later
-            this.logger.Warn(m => m($"OnConnectionUnblocked {sender}"));
-            IsBlocked = false;
-        }
-
-        public RabbitChannel OpenChannel(CancellationToken token)
-        {
-            lock (this.syncRoot)
-            {
-                while (true)
-                {
-                    token.ThrowIfCancellationRequested();
-
-                    if (this.connection == null || !this.connection.IsOpen)
-                    {
-                        this.Open(token);
-                    }
-
-                    try
-                    {
-                        var model = this.connection.CreateModel();
-                        var channel = new RabbitChannel(this.Id, model, this.busContext, this.ConnectionString, this.ConnectionKey);
-                        return channel;
-                    }
-                    catch (Exception ex)
-                    {
-                        this.logger.Error($"Failed to open a new channel on connection string: [{this.ConnectionString}] due to: {ex.Message}; retrying...", ex);
-                    }
-                }
-            }
-        }
-
-        public void Close()
-        {
-            lock (this.syncRoot)
+            try
             {
                 if (this.connection != null)
                 {
-                    if (this.connection.CloseReason == null)
-                    {
-                        this.logger.Trace($"[{this.endpoint}]: closing connection.");
-                        try
-                        {
-                            this.connection.Close(TimeSpan.FromMilliseconds(OperationTimeout));
-                            if (this.connection.CloseReason != null)
-                            {
-                                this.connection.Abort(TimeSpan.FromMilliseconds(OperationTimeout));
-                            }
-                        }
-                        catch (AlreadyClosedException ex)
-                        {
-                            this.logger.Warn(
-                                $"[{this.endpoint}]: connection is already closed: {ex.Message}");
-                        }
-                    }
+                    await this.connection.AbortAsync();
                 }
             }
-        }
-
-        public void Abort()
-        {
-            lock (this.syncRoot)
+            catch (Exception ex)
             {
-                try
-                {
-                    this.connection?.Abort();
-                }
-                catch (Exception ex)
-                {
-                    this.logger.Error(
-                        $"[{this.endpoint}]: failed to abort the underlying connection due to: {ex.Message}",
-                        ex);
-                    throw;
-                }
+                this.logger.LogError(ex, "[{Endpoint}]: failed to abort the underlying connection due to: {Message}", this.endpoint, ex.Message);
+                throw;
             }
-        }
 
-        public void Dispose()
+            return 0;
+        }, cancellationToken: token);
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        IsActive = false;
+        try
         {
-            lock (this.syncRoot)
+            await Close();
+
+            if (this.connection != null)
             {
-                try
-                {
-                    this.Close();
-
-                    if (this.connection != null)
-                    {
-                        this.logger.Trace(
-                            $"[{this.endpoint}]: disposing connection [{this.Id}] at [{this.connection.Endpoint}].");
-                        this.connection?.Dispose();
-                        this.connection = null;
-                    }
-                }
-                catch (Exception ex)
-                {
-                    this.logger.Trace($"An error '{ex.Message}' during connection cleanup has been suppressed");
-                }
-                finally
-                {
-                    this.OnDisposed();
-                }
+                this.logger.LogTrace("[{Endpoint}]: disposing connection [{ConnectionId}] at [{Endpoint2}]", this.endpoint, Id, this.connection.Endpoint);
+                this.connection?.Dispose();
+                this.connection = null;
             }
+            this.semaphore.Dispose();
         }
-
-        public override string ToString()
+        catch (Exception ex)
         {
-            return $"{this.Id} : {this.ConnectionString} : {this.ConnectionKey}";
+            this.logger.LogTrace("An error {Message} during connection cleanup has been suppressed", ex.Message);
         }
+    }
 
-        protected virtual void OnOpened()
+    public override string ToString()
+    {
+        return $"{Id} : {ConnectionString} : {ConnectionKey}";
+    }
+
+    private Task OnConnectionShutdown(object sender, ShutdownEventArgs shutdownEventArgs)
+    {
+        IsActive = false;
+        this.logger.LogTrace("Connection [{ConnectionId}] has been closed due to {ReplyText} ({ReplyCode})", Id, shutdownEventArgs.ReplyText, shutdownEventArgs.ReplyCode);
+        ((INativeConnection)sender).ConnectionShutdownAsync -= OnConnectionShutdown;
+        return Task.CompletedTask;
+    }
+
+    // TODO вынести знание о DNS и прочем за пределы контура, вычислять данные вне контура и передавать на старте
+    private static string GetConnectionKey(string connectionString)
+    {
+        var uri = new Uri(connectionString, UriKind.Absolute);
+
+        var ip = string.Join(",", Dns.GetHostAddresses(uri.Host).OrderBy(x => x.ToString()));
+
+        return $"{ip}:{uri.Port}:{uri.Segments.Last()}";
+    }
+
+    private async Task<RabbitChannel> OpenChannelInternal(CreateChannelOptions options, CancellationToken token)
+    {
+        while (true)
         {
-            this.Opened?.Invoke(this, EventArgs.Empty);
-        }
+            token.ThrowIfCancellationRequested();
 
-        protected virtual void OnClosed()
-        {
-            this.Closed?.Invoke(this, EventArgs.Empty);
-        }
+            if (this.connection == null || !this.connection.IsOpen)
+            {
+                await OpenInternal(token);
+            }
 
-        protected virtual void OnDisposed()
-        {
-            this.Disposed?.Invoke(this, EventArgs.Empty);
-        }
-
-        private void OnConnectionShutdown(object sender, ShutdownEventArgs eventArgs)
-        {
-            Task.Factory.StartNew(
-                () =>
-                {
-                    this.logger.Trace($"Connection [{this.Id}] has been closed due to {eventArgs.ReplyText} ({eventArgs.ReplyCode})");
-
-                    lock (this.syncRoot)
-                    {
-                        ((INativeConnection)sender).ConnectionShutdown -= this.OnConnectionShutdown;
-                    }
-
-                    this.OnClosed();
-                });
-        }
-
-
-        // TODO вынести знание о DNS и прочем за пределы контура, вычислять данные вне контура и передавать на старте
-        private static string GetConnectionKey(string connectionString)
-        {
-            var uri = new Uri(connectionString, UriKind.Absolute);
-
-            var ip = string.Join(",", Dns.GetHostAddresses(uri.Host).OrderBy(x => x.ToString()));
-
-            return $"{ip}:{uri.Port}:{uri.Segments.Last()}";
+            try
+            {
+                var model = await this.connection.CreateChannelAsync(options, cancellationToken: token);
+                return new RabbitChannel(this, model, this.bus);
+            }
+            catch (Exception ex)
+            {
+                this.logger.LogError(ex, "Failed to open a new channel on connection string: [{ConnectionString}] due to: {Message}; retrying...", ConnectionString, ex.Message);
+            }
         }
     }
 }

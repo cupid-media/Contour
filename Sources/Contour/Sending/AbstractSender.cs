@@ -1,339 +1,229 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
-using System.Linq;
+using System.Threading;
 using System.Threading.Tasks;
 
-using Common.Logging;
+using Microsoft.Extensions.Logging;
+using Contour.Transport.RabbitMQ.Internal;
 
-using Contour.Configuration;
-using Contour.Filters;
-using Contour.Helpers;
+namespace Contour.Sending;
 
-namespace Contour.Sending
+/// <summary>
+/// Отправитель, который не знает о транспортном уровне.
+/// </summary>
+internal abstract class AbstractSender<TConfiguration, TBus, TProducer> : ISender
+    where TConfiguration : ISenderConfiguration
+    where TBus : IBus
+    where TProducer : IProducer
 {
-    /// <summary>
-    /// Отправитель, который не знает о транспортном уровне.
-    /// </summary>
-    internal abstract class AbstractSender : ISender
+    protected readonly ILogger Logger;
+
+    protected AbstractSender(TBus bus, TConfiguration configuration)
     {
-        private static readonly ILog Logger = LogManager.GetLogger(typeof(AbstractSender));
+        Bus = bus;
+        Configuration = configuration;
+        this.Logger = LogManager.GetLogger($"{GetType().FullName}({Bus.Endpoint}, {Configuration.Label})");
+    }
 
-        /// <summary>
-        /// Фильтры обработки сообщений.
-        /// </summary>
-        private readonly IList<IMessageExchangeFilter> filters;
+    protected TBus Bus { get; }
 
-        /// <summary>
-        /// Конечная точка, от имени которой работает отправитель.
-        /// </summary>
-        private readonly IEndpoint endpoint;
+    protected TConfiguration Configuration { get; private set; }
 
-        /// <summary>
-        /// Последняя точка в пути сообщения.
-        /// </summary>
-        private readonly string breadCrumbsTail;
+    protected abstract ICollection<TProducer> Producers { get; }
 
-        // TODO: refactor, don't copy filters
+    public virtual bool IsHealthy => this.isStarted;
 
-        /// <summary>
-        /// Initializes a new instance of the <see cref="AbstractSender"/> class. 
-        /// </summary>
-        /// <param name="endpoint">
-        /// Sender's endpoint
-        /// </param>
-        /// <param name="configuration">
-        /// Sender's configuration
-        /// </param>
-        /// <param name="filters">
-        /// A list of message handling filters
-        /// </param>
-        protected AbstractSender(IEndpoint endpoint, ISenderConfiguration configuration, IEnumerable<IMessageExchangeFilter> filters)
+    private bool isConfigured;
+
+    private bool isStarted;
+
+    private readonly ConcurrentDictionary<string, bool> reportedUnsupportedOptions = new();
+
+    /// <summary>
+    /// Проверяет возможность создать маршрут для метки сообщения.
+    /// </summary>
+    /// <param name="label">Метка сообщения, для которой нужно создать маршрут.</param>
+    /// <returns><c>true</c> - если можно создать маршрут.</returns>
+    public bool CanRoute(MessageLabel label)
+    {
+        return label.IsAlias ? label.Name.Equals(Configuration.Key) : label.Equals(Configuration.Label);
+    }
+
+    public async Task Prepare(CancellationToken cancellationToken)
+    {
+        if (!this.isConfigured)
         {
-            this.endpoint = endpoint;
-            breadCrumbsTail = ";" + endpoint.Address;
+            await PrepareProducers(cancellationToken);
+            this.isConfigured = true;
+        }
+    }
 
-            this.filters = new SendingExchangeFilter(InternalSend)
-                .ToEnumerable()
-                .Union(filters)
-                .ToList();
+    public async Task Start(CancellationToken cancellationToken)
+    {
+        if (this.isConfigured && !this.isStarted)
+        {
+            this.Logger.LogTrace("Starting sender of [{Label}]", Configuration.Label);
+            await StartProducers(cancellationToken);
+            this.isStarted = true;
+        }
+        else if (!this.isConfigured)
+        {
+            this.Logger.LogWarning("Sender cannot be started because it's not configured");
+        }
+    }
 
-            Configuration = configuration;
+    public async Task Stop(CancellationToken cancellationToken)
+    {
+        if (this.isStarted)
+        {
+            this.Logger.LogTrace("Stopping sender of [{Label}]", Configuration.Label);
+            await StopProducers(cancellationToken);
         }
 
-        /// <summary>
-        /// Конфигурация отправителя.
-        /// </summary>
-        public ISenderConfiguration Configuration { get; private set; }
+        this.isConfigured = false;
+        this.isStarted = false;
+    }
 
-        /// <summary>
-        /// Есть ли сбои в работе отправителя.
-        /// </summary>
-        public abstract bool IsHealthy { get; }
-
-        /// <summary>
-        /// Проверяет возможность создать маршрут для метки сообщения.
-        /// </summary>
-        /// <param name="label">Метка сообщения, для которой нужно создать маршрут.</param>
-        /// <returns><c>true</c> - если можно создать маршрут.</returns>
-        public virtual bool CanRoute(MessageLabel label)
+    public async ValueTask DisposeAsync()
+    {
+        foreach (var producer in Producers)
         {
-            return label.IsAlias ? label.Name.Equals(Configuration.Alias) : label.Equals(Configuration.Label);
+            await producer.DisposeAsync();
         }
+        ClearProducers();
+    }
 
-        /// <summary>
-        /// Освобождает ресурсы.
-        /// </summary>
-        public abstract void Dispose();
+    /// <summary>
+    /// Sends message using request-reply pattern.
+    /// Copies all allowed message headers. And generates new <see cref="Headers.CorrelationId"/> header.
+    /// </summary>
+    /// <param name="label">Message label.</param>
+    /// <param name="payload">Message payload.</param>
+    /// <param name="options">Request options.</param>
+    /// <returns>Request processing task.</returns>
+    public async Task<RequestResult<TResponse>> Request<TRequest, TResponse>(MessageLabel label, TRequest payload, RequestOptions options) where TRequest : class where TResponse : class
+    {
+        WarnAboutUnsupportedOptions(options);
 
-        /// <summary>
-        /// Sends message using request-reply pattern. 
-        /// <see cref="Headers.CorrelationId"/> header from <see cref="headers"/> parameter is used to correlate the request with the reply, 
-        /// new one is generated if none is supplied.
-        /// </summary>
-        /// <param name="payload">Message payload.</param>
-        /// <param name="headers">Message headers.</param>
-        /// <typeparam name="T">Type of response.</typeparam>
-        /// <returns>Request processing task.</returns>
-        public Task<T> Request<T>(object payload, IDictionary<string, object> headers) where T : class
+        var headers = ApplyRequestingOptions(options);
+        var messageLabel = Configuration.Label.Equals(MessageLabel.Any) ? label : Configuration.Label;
+        var message = new Message<TRequest>(messageLabel, payload, headers) { Key = options.Key };
+
+        this.Logger.LogTrace("Requesting: label=[{MessageLabel}], correlationId=[{CorrelationId}]", messageLabel, headers[Headers.CorrelationId]);
+        return await InternalRequest<TRequest, TResponse>(message, options);
+    }
+
+    /// <summary>
+    /// Отправляет одностороннее сообщение.
+    /// </summary>
+    /// <param name="label">Метка отправляемого сообщения.</param>
+    /// <param name="payload">Тело сообщения.</param>
+    /// <param name="options">Заголовки сообщения.</param>
+    /// <returns>Задача выполнения отправки сообщения.</returns>
+    public async Task<EmitResult> Send<TRequest>(MessageLabel label, TRequest payload, PublishingOptions options) where TRequest : class
+    {
+        WarnAboutUnsupportedOptions(options);
+
+        var headers = ApplyPublishingOptions(options);
+        var messageLabel = Configuration.Label.Equals(MessageLabel.Any) ? label : Configuration.Label;
+        var message = new Message<TRequest>(messageLabel, payload, headers) { Key = options.Key };
+
+        this.Logger.LogTrace("Sending: label=[{MessageLabel}], correlationId=[{CorrelationId}]", messageLabel, headers[Headers.CorrelationId]);
+        return await InternalSend(message, options);
+    }
+
+    /// <summary>
+    /// Фильтр обработки сообщения, который отсылает сообщение.
+    /// </summary>
+    /// <returns>Задача выполнения фильтра.</returns>
+    protected abstract Task<EmitResult> InternalSend<TRequest>(Message<TRequest> message, PublishingOptions options) where TRequest : class;
+
+    protected abstract Task<RequestResult<TResponse>> InternalRequest<TRequest, TResponse>(Message<TRequest> message, RequestOptions options) where TRequest : class where TResponse : class;
+
+    protected abstract Task PrepareProducers(CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Заданные в <paramref name="options"/> настройки, которые этот отправитель не поддерживает.
+    /// </summary>
+    protected virtual IEnumerable<string> GetUnsupportedOptions(PublishingOptions options)
+    {
+        return [];
+    }
+
+    protected abstract Task StopProducers(CancellationToken cancellationToken);
+
+    protected abstract Task StartProducers(CancellationToken cancellationToken);
+
+    protected abstract void ClearProducers();
+
+    /// <summary>
+    /// Пишет предупреждение о заданных настройках, которые отправитель не поддерживает.
+    /// </summary>
+    /// <remarks>
+    /// Предупреждение пишется один раз на настройку: отправка идёт на каждое сообщение, и лог иначе забьётся.
+    /// </remarks>
+    private void WarnAboutUnsupportedOptions(PublishingOptions options)
+    {
+        foreach (var option in GetUnsupportedOptions(options))
         {
-            Headers.ApplySentTimestamp(headers);
-            var message = new Message(Configuration.Label, headers, payload);
-
-            var exchange = new MessageExchange(message, typeof(T));
-            var invoker = new MessageExchangeFilterInvoker(filters);
-
-            return invoker.Process(exchange)
-                .ContinueWith(
-                    t =>
-                        {
-                            t.Result.ThrowIfFailed();
-                            return (T)t.Result.In.Payload;
-                        });
-        }
-
-        /// <summary>
-        /// Sends message using request-reply pattern.
-        /// Copies all allowed message headers and generates new <see cref="Headers.CorrelationId"/> header. 
-        /// <seealso ref="https://github.com/SDVentures/Contour#contour-message-headers"/>.
-        /// </summary>
-        /// <param name="payload">Message payload.</param>
-        /// <param name="options">Request options.</param>
-        /// <typeparam name="T">Type of response.</typeparam>
-        /// <returns>Request processing task.</returns>
-        public Task<T> Request<T>(object payload, RequestOptions options) where T : class
-        {
-            var headers = ApplyOptions(options);
-            headers[Headers.CorrelationId] = Guid.NewGuid().ToString("n");
-
-            Logger.Trace(m => m("Message original Id [{0}], correlation Id [{1}].", Headers.GetString(headers, Headers.OriginalMessageId), Headers.GetString(headers, Headers.CorrelationId)));
-
-            return Request<T>(payload, headers);
-        }
-
-        /// <summary>
-        /// Отправляет одностороннее сообщение.
-        /// </summary>
-        /// <param name="payload">Тело сообщения.</param>
-        /// <param name="headers">Заголовки сообщения.</param>
-        /// <returns>Задача выполнения отправки сообщения.</returns>
-        [Obsolete("Необходимо использовать метод Send с указанием метки сообщения.")]
-        public Task Send(object payload, IDictionary<string, object> headers)
-        {
-            Headers.ApplySentTimestamp(headers);
-            var message = new Message(Configuration.Label, headers, payload);
-
-            return ProcessFilter(message, null);
-        }
-
-        /// <summary>
-        /// Отправляет одностороннее сообщение.
-        /// </summary>
-        /// <param name="payload">Тело сообщения.</param>
-        /// <param name="options">Заголовки сообщения.</param>
-        /// <returns>Задача выполнения отправки сообщения.</returns>
-        [Obsolete("Необходимо использовать метод Send с указанием метки сообщения.")]
-        public Task Send(object payload, PublishingOptions options)
-        {
-            return Send(payload, ApplyOptions(options));
-        }
-
-        /// <summary>
-        /// Sends message using request-reply pattern.
-        /// Copies all allowed message headers. And generates new <see cref="Headers.CorrelationId"/> header. 
-        /// <seealso ref="https://github.com/SDVentures/Contour#contour-message-headers"/>.
-        /// </summary>
-        /// <param name="label">Message label.</param>
-        /// <param name="payload">Message payload.</param>
-        /// <param name="options">Request options.</param>
-        /// <typeparam name="T">Type of response.</typeparam>
-        /// <returns>Request processing task.</returns>
-        public Task<T> Request<T>(MessageLabel label, object payload, RequestOptions options) where T : class
-        {
-            var headers = ApplyOptions(options);
-            headers[Headers.CorrelationId] = Guid.NewGuid().ToString("n");
-            
-            return Request<T>(label, payload, headers);
-        }
-
-        /// <summary>
-        /// Sends message using request-reply pattern. 
-        /// <see cref="Headers.CorrelationId"/> header from <see cref="headers"/> parameter is used to correlate the request with the reply, 
-        /// new one is generated if none is supplied.
-        /// </summary>
-        /// <param name="label">Message label.</param>
-        /// <param name="payload">Message payload.</param>
-        /// <param name="headers">Message headers.</param>
-        /// <typeparam name="T">Type of response.</typeparam>
-        /// <returns>Request processing task.</returns>
-        public Task<T> Request<T>(MessageLabel label, object payload, IDictionary<string, object> headers) where T : class
-        {
-            Headers.ApplySentTimestamp(headers);
-            if (!headers.ContainsKey(Headers.CorrelationId))
+            if (this.reportedUnsupportedOptions.TryAdd(option, true))
             {
-                headers[Headers.CorrelationId] = Guid.NewGuid().ToString("n");
+                this.Logger.LogWarning("Option [{Option}] is set, but the sender of [{Label}] does not support it: the option has no effect", option, Configuration.Label);
             }
-
-            Logger.Trace($"Requesting: label=[{label}], correlationId=[{headers[Headers.CorrelationId]}]");
-            var message = new Message(Configuration.Label.Equals(MessageLabel.Any) ? label : Configuration.Label, headers, payload);
-
-            var exchange = new MessageExchange(message, typeof(T));
-            var invoker = new MessageExchangeFilterInvoker(filters);
-
-            return invoker.Process(exchange)
-                .ContinueWith(
-                    t =>
-                    {
-                        t.Result.ThrowIfFailed();
-                        return (T)t.Result.In.Payload;
-                    });
         }
+    }
 
-        /// <summary>
-        /// Отправляет одностороннее сообщение.
-        /// </summary>
-        /// <param name="label">Метка отправляемого сообщения.</param>
-        /// <param name="payload">Тело сообщения.</param>
-        /// <param name="options">Заголовки сообщения.</param>
-        /// <param name="connectionKey">Идентификатор подключения, по которому нужно отправить сообщение</param>
-        /// <returns>Задача выполнения отправки сообщения.</returns>
-        private Task Send(MessageLabel label, object payload, PublishingOptions options, string connectionKey)
+    /// <summary>
+    /// Конвертирует настройки публикации сообщения в заголовки сообщения.
+    /// </summary>
+    /// <param name="options">Настройки публикации сообщения.</param>
+    /// <returns>Заголовки сообщения.</returns>
+    private IDictionary<string, object> ApplyPublishingOptions(PublishingOptions options)
+    {
+        var storage = Configuration.IncomingMessageHeaderStorage;
+        var inputHeaders = storage.Load() ?? new Dictionary<string, object>();
+        var outputHeaders = new Dictionary<string, object>(inputHeaders);
+
+        Headers.ApplyBreadcrumbs(outputHeaders, Bus.Endpoint.Address, options.BreadcrumbsPrefix);
+        Headers.ApplyOriginalMessageId(outputHeaders);
+
+        Headers.ApplyPersistently(outputHeaders, options.Persistently ?? Configuration.Persistently);
+
+        if (Configuration.Delayed)
         {
-            var headers = ApplyOptions(options);
-            Headers.ApplySentTimestamp(headers);
-            var messageLabel = Configuration.Label.Equals(MessageLabel.Any) ? label : Configuration.Label;
-
-            return ProcessFilter(new Message(messageLabel, headers, payload), connectionKey);
+            Headers.ApplyDelay(outputHeaders, options.Delay);
         }
 
-        /// <summary>
-        /// Отправляет одностороннее сообщение.
-        /// </summary>
-        /// <param name="label">Метка отправляемого сообщения.</param>
-        /// <param name="payload">Тело сообщения.</param>
-        /// <param name="headers">Заголовки сообщения.</param>
-        /// <param name="connectionKey">Идентификатор подключения, по которому нужно отправить сообщение</param>
-        /// <returns>Задача выполнения отправки сообщения.</returns>
-        public Task Send(MessageLabel label, object payload, IDictionary<string, object> headers, string connectionKey)
+        Headers.ApplyTtl(outputHeaders, options.Ttl ?? Configuration.Ttl);
+        Headers.ApplyAdditionalHeaders(outputHeaders, options.AdditionalHeaders);
+        Headers.ApplySentTimestamp(outputHeaders);
+
+        if (!outputHeaders.ContainsKey(Headers.CorrelationId))
         {
-            return Send(label, payload, new PublishingOptions { AdditionalHeaders = new Dictionary<string, object>(headers) }, connectionKey);
+            outputHeaders[Headers.CorrelationId] = Guid.NewGuid().ToString("n");
         }
-        
-        /// <summary>
-        /// Отправляет одностороннее сообщение.
-        /// </summary>
-        /// <param name="label">Метка отправляемого сообщения.</param>
-        /// <param name="payload">Тело сообщения.</param>
-        /// <param name="headers">Заголовки сообщения.</param>
-        /// <returns>Задача выполнения отправки сообщения.</returns>
-        public Task Send(MessageLabel label, object payload, IDictionary<string, object> headers)
+
+        return outputHeaders;
+    }
+
+    /// <summary>
+    /// Конвертирует настройки публикации сообщения в заголовки сообщения.
+    /// </summary>
+    /// <param name="requestOptions">Настройки публикации сообщения.</param>
+    /// <returns>Заголовки сообщения.</returns>
+    private IDictionary<string, object> ApplyRequestingOptions(RequestOptions requestOptions)
+    {
+        var headers = ApplyPublishingOptions(requestOptions as PublishingOptions);
+
+        var timeout = requestOptions.Timeout ?? Configuration.RequestTimeout;
+        if (timeout != null)
         {
-            return Send(label, payload, headers, null);
+            headers[Headers.Timeout] = timeout.Value;
         }
 
-        /// <summary>
-        /// Отправляет одностороннее сообщение.
-        /// </summary>
-        /// <param name="label">Метка отправляемого сообщения.</param>
-        /// <param name="payload">Тело сообщения.</param>
-        /// <param name="options">Заголовки сообщения.</param>
-        /// <returns>Задача выполнения отправки сообщения.</returns>
-        public Task Send(MessageLabel label, object payload, PublishingOptions options)
-        {
-            return Send(label, payload, options, null);
-        }
+        headers[Headers.CorrelationId] = Guid.NewGuid().ToString("n");
 
-        /// <summary>
-        /// Запускает отправитель.
-        /// </summary>
-        public abstract void Start();
-
-        /// <summary>
-        /// Останавливает отправитель.
-        /// </summary>
-        public abstract void Stop();
-
-        /// <summary>
-        /// Фильтр обработки сообщения, который отсылает сообщение.
-        /// </summary>
-        /// <param name="exchange">Отсылаемое сообщение.</param>
-        /// <param name="connectionKey">ИД подключения, через которую надо отослать сообщение</param>
-        /// <returns>Задача выполнения фильтра.</returns>
-        protected abstract Task<MessageExchange> InternalSend(MessageExchange exchange, string connectionKey);
-
-        /// <summary>
-        /// Обрабатывает сообщение с помощью зарегистрированных фильтров.
-        /// </summary>
-        /// <param name="message">Обрабатываемое сообщение.</param>
-        /// <returns>Задача обработки сообщения с помощью фильтров.</returns>
-        private Task ProcessFilter(IMessage message, string connectionKey)
-        {
-            var exchange = new MessageExchange(message, null);
-            var invoker = new MessageExchangeFilterInvoker(filters);
-
-            return invoker.Process(exchange, connectionKey);
-        }
-
-        /// <summary>
-        /// Конвертирует настройки публикации сообщения в заголовки сообщения.
-        /// </summary>
-        /// <param name="options">Настройки публикации сообщения.</param>
-        /// <returns>Заголовки сообщения.</returns>
-        private IDictionary<string, object> ApplyOptions(PublishingOptions options)
-        {
-            var storage = Configuration.Options.GetIncomingMessageHeaderStorage().Value;
-            var inputHeaders = storage.Load() ?? new Dictionary<string, object>();
-            var outputHeaders = new Dictionary<string, object>(inputHeaders);
-
-            Headers.ApplyBreadcrumbs(outputHeaders, endpoint.Address, options.BreadcrumbsPrefix);
-            Headers.ApplyOriginalMessageId(outputHeaders);
-
-            Maybe<bool> persist = BusOptions.Pick(options.Persistently, Configuration.Options.IsPersistently());
-            Headers.ApplyPersistently(outputHeaders, persist);
-
-            Maybe<TimeSpan?> ttl = BusOptions.Pick(options.Ttl, Configuration.Options.GetTtl());
-            Headers.ApplyTtl(outputHeaders, ttl);
-            
-            Headers.ApplyAdditionalHeaders(outputHeaders, options.AdditionalHeaders);
-            
-            return outputHeaders;
-        }
-
-        /// <summary>
-        /// Конвертирует настройки публикации сообщения в заголовки сообщения.
-        /// </summary>
-        /// <param name="requestOptions">Настройки публикации сообщения.</param>
-        /// <returns>Заголовки сообщения.</returns>
-        private IDictionary<string, object> ApplyOptions(RequestOptions requestOptions)
-        {
-            IDictionary<string, object> headers = ApplyOptions(requestOptions as PublishingOptions);
-
-            Maybe<TimeSpan?> timeout = BusOptions.Pick(requestOptions.Timeout, Configuration.Options.GetRequestTimeout());
-            if (timeout != null && timeout.HasValue)
-            {
-                headers[Headers.Timeout] = timeout.Value;
-            }
-
-            return headers;
-        }
+        return headers;
     }
 }

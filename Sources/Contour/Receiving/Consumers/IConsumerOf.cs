@@ -1,35 +1,14 @@
-﻿// --------------------------------------------------------------------------------------------------------------------
-// <copyright file="IConsumerOf.cs" company="">
-//   
-// </copyright>
-// <summary>
-//   The ConsumerOf interface.
-// </summary>
-// --------------------------------------------------------------------------------------------------------------------
+﻿using System.Threading.Tasks;
 
-using System;
-using System.Threading.Tasks;
+namespace Contour.Receiving.Consumers;
 
-namespace Contour.Receiving.Consumers
+/// <summary>
+/// The ConsumerOf interface.
+/// </summary>
+/// <typeparam name="T">
+/// </typeparam>
+public interface IConsumerOf<T> : IConsumer<T>
+    where T : class
 {
-    /// <summary>
-    /// The ConsumerOf interface.
-    /// </summary>
-    /// <typeparam name="T">
-    /// </typeparam>
-    public interface IConsumerOf<T> : IConsumer<T>
-        where T : class
-    {
-        #region Public Methods and Operators
-
-        /// <summary>
-        /// The handle.
-        /// </summary>
-        /// <param name="context">
-        /// The context.
-        /// </param>
-        void Handle(IConsumingContext<T> context);
-
-        #endregion
-    }
+    Task HandleAsync(IConsumingContext<T> context);
 }

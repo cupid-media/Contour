@@ -1,67 +1,63 @@
-﻿using Common.Logging;
+﻿using System;
+using System.Collections;
+using System.Collections.Generic;
+using System.Linq;
+using Microsoft.Extensions.Logging;
 
-namespace Contour.Transport.RabbitMQ
+namespace Contour.Transport.RabbitMQ;
+
+/// <summary>
+/// Enables RabbitMQ connection string operations
+/// </summary>
+public class RabbitConnectionString : IEnumerable<string>
 {
-    using System;
-    using System.Collections;
-    using System.Collections.Generic;
-    using System.Linq;
+    private const string Separator = ",";
+    private readonly IList<string> urls;
+    private readonly ILogger logger = LogManager.GetLogger<RabbitConnectionString>();
 
     /// <summary>
-    /// Enables RabbitMQ connection string operations
+    /// Initializes a new instance of the <see cref="RabbitConnectionString"/> class.
     /// </summary>
-    public class RabbitConnectionString : IEnumerable<string>
+    /// <param name="connectionString">
+    /// The connection string.
+    /// </param>
+    /// <exception cref="ArgumentNullException">
+    /// Raises an error if connection string is null or empty
+    /// </exception>
+    public RabbitConnectionString(string connectionString)
     {
-        private const string Separator = ",";
-        private readonly IList<string> urls;
-        private readonly ILog logger = LogManager.GetCurrentClassLogger();
-
-        /// <summary>
-        /// Initializes a new instance of the <see cref="RabbitConnectionString"/> class.
-        /// </summary>
-        /// <param name="connectionString">
-        /// The connection string.
-        /// </param>
-        /// <exception cref="ArgumentNullException">
-        /// Raises an error if connection string is null or empty
-        /// </exception>
-        public RabbitConnectionString(string connectionString)
+        if (string.IsNullOrEmpty(connectionString))
         {
-            if (string.IsNullOrEmpty(connectionString))
-            {
-                throw new ArgumentNullException(nameof(connectionString));
-            }
-
-            this.urls = connectionString.Split(new[] { Separator }, StringSplitOptions.RemoveEmptyEntries);
-
-            if (!this.urls.Any())
-            {
-                throw new ArgumentException($"The provided connection string does not contain any URLs");
-            }
-
-            if (this.urls.Any(url => url.Trim() == string.Empty))
-            {
-                throw new ArgumentException("The provided connection string contains empty URLs");
-            }
-
-            this.logger.Trace(
-                $"Connection string [{connectionString}] has been split into: {string.Join("; ", this.urls)}");
+            throw new ArgumentNullException(nameof(connectionString));
         }
 
-        /// <summary>
-        /// Gets the connection strings enumerator
-        /// </summary>
-        /// <returns>
-        /// The <see cref="IEnumerator"/>.
-        /// </returns>
-        public IEnumerator<string> GetEnumerator()
+        this.urls = connectionString.Split([Separator], StringSplitOptions.RemoveEmptyEntries)
+            .Distinct()
+            .Select(s => s.Trim())
+            .Where(s => !string.IsNullOrEmpty(s))
+            .ToList();
+
+        if (!this.urls.Any())
         {
-            return this.urls.GetEnumerator();
+            throw new ArgumentException("The provided connection string does not contain any URLs");
         }
 
-        IEnumerator IEnumerable.GetEnumerator()
-        {
-            return this.GetEnumerator();
-        }
+        this.logger.LogTrace("Connection string [{ConnectionString}] has been split into: {Urls}", connectionString, string.Join("; ", this.urls));
+    }
+
+    /// <summary>
+    /// Gets the connection strings enumerator
+    /// </summary>
+    /// <returns>
+    /// The <see cref="IEnumerator"/>.
+    /// </returns>
+    public IEnumerator<string> GetEnumerator()
+    {
+        return this.urls.GetEnumerator();
+    }
+
+    IEnumerator IEnumerable.GetEnumerator()
+    {
+        return GetEnumerator();
     }
 }

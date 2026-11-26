@@ -1,10 +1,9 @@
-namespace Contour.Transport.RabbitMQ.Internal
+namespace Contour.Transport.RabbitMQ.Internal;
+
+internal class RabbitConnectionPool : ConnectionPool<IRabbitConnection>
 {
-    internal class RabbitConnectionPool : ConnectionPool<IRabbitConnection>
+    public RabbitConnectionPool(RabbitBus bus)
     {
-        public RabbitConnectionPool(IBusContext context)
-        {
-            this.Provider = new RabbitConnectionProvider(context);
-        }
+        Provider = new RabbitConnectionProvider(bus);
     }
 }

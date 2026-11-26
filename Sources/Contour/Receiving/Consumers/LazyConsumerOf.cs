@@ -1,114 +1,65 @@
-﻿// --------------------------------------------------------------------------------------------------------------------
-// <copyright file="LazyConsumerOf.cs" company="">
-//   
-// </copyright>
-// <summary>
-//   The lazy consumer of.
-// </summary>
-// --------------------------------------------------------------------------------------------------------------------
+﻿using System.Threading.Tasks;
 
-using System.Threading.Tasks;
+namespace Contour.Receiving.Consumers;
 
-namespace Contour.Receiving.Consumers
+using System;
+
+/// <summary>
+/// The lazy consumer of.
+/// </summary>
+/// <typeparam name="T">
+/// </typeparam>
+public class LazyConsumerOf<T> : IConsumerOf<T>, IAsyncDisposable
+    where T : class
 {
-    using System;
+    /// <summary>
+    /// The _handler.
+    /// </summary>
+    private readonly Lazy<IConsumer<T>> handler;
+
+    private IConsumerOf<T> consumer;
 
     /// <summary>
-    /// The lazy consumer of.
+    /// Инициализирует новый экземпляр класса <see cref="LazyConsumerOf{T}"/>.
     /// </summary>
-    /// <typeparam name="T">
-    /// </typeparam>
-    public class LazyConsumerOf<T> : IConsumerOf<T>, IAsyncConsumerOf<T>
-        where T : class
+    /// <param name="handlerResolver">
+    /// The handler resolver.
+    /// </param>
+    public LazyConsumerOf(Func<object> handlerResolver)
     {
-        #region Fields
+        this.handler = new Lazy<IConsumer<T>>(() => (IConsumer<T>)handlerResolver(), true);
+    }
 
-        /// <summary>
-        /// The _handler.
-        /// </summary>
-        private readonly Lazy<IConsumer<T>> handler;
+    /// <summary>
+    /// Инициализирует новый экземпляр класса <see cref="LazyConsumerOf{T}"/>.
+    /// </summary>
+    /// <param name="handlerResolver">
+    /// The handler resolver.
+    /// </param>
+    public LazyConsumerOf(Func<IConsumer<T>> handlerResolver)
+    {
+        this.handler = new Lazy<IConsumer<T>>(handlerResolver, true);
+    }
 
-        private IConsumerOf<T> syncConsumer;
-
-        private IAsyncConsumerOf<T> asyncConsumer;
-
-        #endregion
-
-        #region Constructors and Destructors
-
-        /// <summary>
-        /// Инициализирует новый экземпляр класса <see cref="LazyConsumerOf{T}"/>.
-        /// </summary>
-        /// <param name="handlerResolver">
-        /// The handler resolver.
-        /// </param>
-        public LazyConsumerOf(Func<object> handlerResolver)
+    public Task HandleAsync(IConsumingContext<T> context)
+    {
+        if (!this.handler.IsValueCreated)
         {
-            this.handler = new Lazy<IConsumer<T>>(() => (IConsumer<T>)handlerResolver(), true);
+            this.consumer = this.handler.Value as IConsumerOf<T>;
         }
 
-        /// <summary>
-        /// Инициализирует новый экземпляр класса <see cref="LazyConsumerOf{T}"/>.
-        /// </summary>
-        /// <param name="handlerResolver">
-        /// The handler resolver.
-        /// </param>
-        public LazyConsumerOf(Func<IConsumer<T>> handlerResolver)
+        return this.consumer != null
+            ? this.consumer.HandleAsync(context)
+            : throw new Exception($"This type: [{this.handler.Value.GetType()}] is not implement IConsumerOf<T>");
+    }
+
+    public ValueTask DisposeAsync()
+    {
+        if (this.consumer is IAsyncDisposable asyncDisposable)
         {
-            this.handler = new Lazy<IConsumer<T>>(handlerResolver, true);
+            return asyncDisposable.DisposeAsync();
         }
 
-        #endregion
-
-        #region Public Methods and Operators
-
-        /// <summary>
-        /// The handle.
-        /// </summary>
-        /// <param name="context">
-        /// The context.
-        /// </param>
-        public void Handle(IConsumingContext<T> context)
-        {
-            if (!this.handler.IsValueCreated)
-            {
-                this.syncConsumer = this.handler.Value as IConsumerOf<T>;
-            }
-
-            if (this.syncConsumer == null)
-            {
-                throw new Exception($"This type: [{this.handler.Value.GetType()}] is not implement IConsumerOf<T>");
-            }
-
-            this.syncConsumer.Handle(context);
-        }
-
-        #endregion
-
-        public Task HandleAsync(IConsumingContext<T> context)
-        {
-            if (!this.handler.IsValueCreated)
-            {
-                this.asyncConsumer = this.handler.Value as IAsyncConsumerOf<T>;
-                if (this.asyncConsumer == null)
-                {
-                    this.syncConsumer = this.handler.Value as IConsumerOf<T>;
-                }
-            }
-
-            if (this.asyncConsumer != null)
-            {
-                return this.asyncConsumer.HandleAsync(context);
-            }
-            else if (this.syncConsumer != null)
-            {
-                this.syncConsumer.Handle(context);
-                return Task.CompletedTask;
-            }
-            else
-            {
-                throw new Exception($"This type: [{this.handler.Value.GetType()}] is not implement IAsyncConsumerOf<T> or IConsumerOf<T>");
-            }
-        }
+        return ValueTask.CompletedTask;
     }
 }

@@ -1,0 +1,14 @@
+namespace Contour.Configuration;
+
+/// <summary>
+/// Provides a connection string per label.
+/// </summary>
+public interface IConnectionStringProvider
+{
+    /// <summary>
+    /// Provides a connection string per label.
+    /// </summary>
+    /// <param name="messageLabel">An outgoing or incoming label of an endpoint.</param>
+    /// <returns>Connection string for the label if presents, or <c>null</c>.</returns>
+    string GetConnectionString(MessageLabel messageLabel);
+}

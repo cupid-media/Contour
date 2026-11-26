@@ -1,0 +1,7 @@
+variables:
+  PROJECT_NAME: "Contour"
+
+include:
+  - project: '$DT_PROJECT_PATH'
+    ref: '$DT_PROJECT_REF'
+    file: '$DT_PROJECT_FILE'

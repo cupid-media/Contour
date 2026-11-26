@@ -1,57 +1,34 @@
-﻿// --------------------------------------------------------------------------------------------------------------------
-// <copyright file="IPayloadConverter.cs" company="">
-//   
-// </copyright>
-// <summary>
-//   Конвертер сообщений.
-// </summary>
-// --------------------------------------------------------------------------------------------------------------------
+﻿namespace Contour.Serialization;
 
-namespace Contour.Serialization
+/// <summary>
+///   Конвертер сообщений.
+/// </summary>
+public interface IPayloadConverter
 {
-    using System;
+    /// <summary>
+    /// Gets the content type.
+    /// </summary>
+    string ContentType { get; }
 
     /// <summary>
-    ///   Конвертер сообщений.
+    /// The from object.
     /// </summary>
-    public interface IPayloadConverter
-    {
-        #region Public Properties
+    /// <param name="payload">
+    /// The payload.
+    /// </param>
+    /// <returns>
+    /// The <see cref="byte"/>.
+    /// </returns>
+    byte[] FromObject(object payload);
 
-        /// <summary>
-        /// Gets the content type.
-        /// </summary>
-        string ContentType { get; }
-
-        #endregion
-
-        #region Public Methods and Operators
-
-        /// <summary>
-        /// The from object.
-        /// </summary>
-        /// <param name="payload">
-        /// The payload.
-        /// </param>
-        /// <returns>
-        /// The <see cref="byte"/>.
-        /// </returns>
-        byte[] FromObject(object payload);
-
-        /// <summary>
-        /// The to object.
-        /// </summary>
-        /// <param name="payload">
-        /// The payload.
-        /// </param>
-        /// <param name="targetType">
-        /// The target type.
-        /// </param>
-        /// <returns>
-        /// The <see cref="object"/>.
-        /// </returns>
-        object ToObject(byte[] payload, Type targetType);
-
-        #endregion
-    }
+    /// <summary>
+    /// The to object.
+    /// </summary>
+    /// <param name="payload">
+    /// The payload.
+    /// </param>
+    /// <returns>
+    /// The <see cref="object"/>.
+    /// </returns>
+    T ToObject<T>(byte[] payload);
 }

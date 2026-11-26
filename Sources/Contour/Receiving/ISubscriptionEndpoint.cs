@@ -1,33 +1,19 @@
-﻿// --------------------------------------------------------------------------------------------------------------------
-// <copyright file="ISubscriptionEndpoint.cs" company="">
-//   
-// </copyright>
-// <summary>
-//   The SubscriptionEndpoint interface.
-// </summary>
-// --------------------------------------------------------------------------------------------------------------------
+﻿namespace Contour.Receiving;
 
-namespace Contour.Receiving
+using Sending;
+
+/// <summary>
+/// The SubscriptionEndpoint interface.
+/// </summary>
+public interface ISubscriptionEndpoint
 {
-    using Contour.Sending;
+    /// <summary>
+    /// Gets the callback route resolver.
+    /// </summary>
+    IRouteResolver CallbackRouteResolver { get; }
 
     /// <summary>
-    /// The SubscriptionEndpoint interface.
+    /// Gets the listening source.
     /// </summary>
-    public interface ISubscriptionEndpoint
-    {
-        #region Public Properties
-
-        /// <summary>
-        /// Gets the callback route resolver.
-        /// </summary>
-        IRouteResolver CallbackRouteResolver { get; }
-
-        /// <summary>
-        /// Gets the listening source.
-        /// </summary>
-        IListeningSource ListeningSource { get; }
-
-        #endregion
-    }
+    IListeningSource ListeningSource { get; }
 }

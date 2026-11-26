@@ -1,282 +1,160 @@
 ﻿using System;
 using System.Collections.Generic;
-using System.Diagnostics;
-using System.Diagnostics.CodeAnalysis;
+using System.Threading;
 using System.Threading.Tasks;
 
 using Contour.Configuration;
 using Contour.Receiving;
-
-using RabbitMQ.Client;
+using Contour.Sending;
 using RabbitMQ.Client.Events;
 
-namespace Contour.Transport.RabbitMQ.Internal
+namespace Contour.Transport.RabbitMQ.Internal;
+
+/// <summary>
+/// Доставленное сообщение через брокер <c>RabbitMQ</c>.
+/// </summary>
+internal class RabbitDelivery : IDelivery
 {
-    /// <summary>
-    /// Доставленное сообщение через брокер <c>RabbitMQ</c>.
-    /// </summary>
-    internal class RabbitDelivery : IDelivery
+    private readonly Lazy<IDictionary<string, object>> headers;
+
+    private readonly bool requiresAccept;
+    private readonly RabbitBus bus;
+    private volatile bool isAccepted;
+
+    public RabbitDelivery(RabbitBus bus, RabbitChannel channel, BasicDeliverEventArgs args, bool requiresAccept)
     {
-        /// <summary>
-        /// Заголовки сообщения.
-        /// </summary>
-        private readonly Lazy<IDictionary<string, object>> headers;
+        this.bus = bus;
 
-        /// <summary>
-        /// Верно, если сообщение требует подтверждения обработки.
-        /// </summary>
-        private readonly bool requiresAccept;
-        private readonly IBusContext busContext;
+        Channel = channel;
+        Label = this.bus.MessageLabelHandler.Resolve(args);
+        Args = args;
+        this.requiresAccept = requiresAccept;
 
-        /// <summary>
-        /// Верно, если обработка сообщения подтверждена.
-        /// </summary>
-        [SuppressMessage("StyleCop.CSharp.NamingRules", "SA1305:FieldNamesMustNotUseHungarianNotation", Justification = "Reviewed. Suppression is OK here.")]
-        private volatile bool isAccepted;
+        this.headers = new Lazy<IDictionary<string, object>>(
+            () => ExtractHeadersFrom(args));
+    }
 
-        /// <summary>
-        /// Initializes a new instance of the <see cref="RabbitDelivery"/> class. 
-        /// </summary>
-        /// <param name="busContext">
-        /// The bus Context.
-        /// </param>
-        /// <param name="channel">
-        /// Кан��л поставки сообщения.
-        /// </param>
-        /// <param name="args">
-        /// Параметры поставки сообщения.
-        /// </param>
-        /// <param name="requiresAccept">
-        /// Верно, если требуется подтверждение доставки.
-        /// </param>
-        public RabbitDelivery(IBusContext busContext, RabbitChannel channel, BasicDeliverEventArgs args, bool requiresAccept)
+    public BasicDeliverEventArgs Args { get; private set; }
+
+    public RabbitChannel Channel { get; private set; }
+
+    public string CorrelationId => Args.BasicProperties.CorrelationId;
+
+    public IDictionary<string, object> Headers => this.headers.Value;
+
+    public bool IsResponse => CorrelationId != null && ReplyRoute == null;
+
+    public MessageLabel Label { get; private set; }
+
+    public bool CanReply => ReplyRoute != null && !string.IsNullOrWhiteSpace(CorrelationId);
+
+    /// <summary>
+    /// Маршрут ответа на доставленное сообщение.
+    /// </summary>
+    private RabbitRoute ReplyRoute
+    {
+        get
         {
-            this.busContext = busContext;
-
-            this.Channel = channel;
-            this.Label = this.busContext.MessageLabelHandler.Resolve(args);
-            this.Args = args;
-            this.requiresAccept = requiresAccept;
-
-            this.headers = new Lazy<IDictionary<string, object>>(
-                () => this.ExtractHeadersFrom(args));
-        }
-
-        /// <summary>
-        /// Параметры поставки сообщения.
-        /// </summary>
-        public BasicDeliverEventArgs Args { get; private set; }
-
-        /// <summary>
-        /// Канал доставки сообщения.
-        /// </summary>
-        public RabbitChannel Channel { get; private set; }
-
-        /// <summary>
-        /// Идентификатор сообщения.
-        /// </summary>
-        public string CorrelationId => this.Args.BasicProperties.CorrelationId;
-
-        /// <summary>
-        /// Заголовки сообщения.
-        /// </summary>
-        public IDictionary<string, object> Headers => this.headers.Value;
-
-        /// <summary>
-        /// Маршрут входящего сообщения.
-        /// </summary>
-        public RabbitRoute IncomingRoute => new RabbitRoute(this.Args.Exchange, this.Args.RoutingKey);
-
-        /// <summary>
-        /// Верно, если сообщение запрос.
-        /// </summary>
-        public bool IsRequest => this.CorrelationId != null && this.ReplyRoute != null;
-
-        /// <summary>
-        /// Верно, если сообщение ответ.
-        /// </summary>
-        public bool IsResponse => this.CorrelationId != null && this.ReplyRoute == null;
-
-        /// <summary>
-        /// Метка полученного сообщения.
-        /// </summary>
-        public MessageLabel Label { get; private set; }
-
-        /// <summary>
-        /// Верно, если можно ответить на полученное сообщение.
-        /// </summary>
-        public bool CanReply => this.ReplyRoute != null && !string.IsNullOrWhiteSpace(this.CorrelationId);
-
-        /// <summary>
-        /// Канал доставки сообщения.
-        /// </summary>
-        IChannel IDelivery.Channel => this.Channel;
-
-        /// <summary>
-        /// Маршрут ответа на доставленное сообщение.
-        /// </summary>
-        IRoute IDelivery.ReplyRoute => this.ReplyRoute;
-
-        /// <summary>
-        /// Маршрут ответа на доставленное сообщение.
-        /// </summary>
-        private RabbitRoute ReplyRoute
-        {
-            get
-            {
-                if (this.Args.BasicProperties.ReplyTo == null)
-                {
-                    return null;
-                }
-
-                PublicationAddress replyAddress = this.Args.BasicProperties.ReplyToAddress;
-                return new RabbitRoute(replyAddress.ExchangeName, replyAddress.RoutingKey);
-            }
-        }
-
-        /// <summary>
-        /// Подтверждает доставку сообщения.
-        /// </summary>
-        public void Accept()
-        {
-            if (!this.requiresAccept || this.isAccepted)
-            {
-                return;
-            }
-
-            this.Channel.Accept(this);
-            this.isAccepted = true;
-        }
-
-        /// <summary>
-        /// Пересылает сообщение, устанавливая указанную метку.
-        /// </summary>
-        /// <param name="label">Новая метка, с которой пересылается сообщение.</param>
-        /// <typeparam name="T">Тип получаемого сообщения.</typeparam>
-        /// <returns>Задача пересылки сообщения.</returns>
-        public IConsumingContext<T> BuildConsumingContext<T>(MessageLabel label = null) where T : class
-        {
-            Message<T> message = this.UnpackAs<T>();
-
-            if (label != null && !label.IsAny && !label.IsEmpty)
-            {
-                message = (Message<T>)message.WithLabel(label);
-            }
-
-            var context = new DefaultConsumingContext<T>(this.busContext, message, this);
-
-            return context;
-        }
-
-        /// <summary>
-        /// Пересылает сообщение, устанавливая указанную метку.
-        /// </summary>
-        /// <param name="label">Новая метка, с которой пересылается сообщение.</param>
-        /// <param name="payload">Новое содержимое сообщения.</param>
-        /// <returns>Задачи пересылки сообщения.</returns>
-        public Task Forward(MessageLabel label, object payload)
-        {
-            var localHeaders = new Dictionary<string, object>(this.Headers);
-            localHeaders[Contour.Headers.CorrelationId] = this.CorrelationId;
-            localHeaders[Contour.Headers.ReplyRoute] = this.ReplyRoute;
-            if (!string.IsNullOrEmpty(this.Args.BasicProperties.Expiration) && long.TryParse(this.Args.BasicProperties.Expiration, out var expiration))
-            {
-                localHeaders[Contour.Headers.Ttl] = TimeSpan.FromMilliseconds(expiration);
-            }
-            Contour.Headers.ApplyBreadcrumbs(localHeaders, this.busContext.Endpoint.Address);
-            Contour.Headers.ApplyOriginalMessageId(localHeaders);
-            localHeaders[Contour.Headers.Forwarded] = true;
-
-            return this.busContext.Emit(label, payload, localHeaders, string.Equals(label.Name, SystemQueues.Fault, StringComparison.OrdinalIgnoreCase) || string.Equals(label.Name, SystemQueues.Unhandled, StringComparison.OrdinalIgnoreCase) ? null : this.Channel.ConnectionKey);
-        }
-
-        /// <summary>
-        /// Помечает сообщение как необработанное.
-        /// </summary>
-        /// <param name="requeue">
-        /// Сообщение требуется вернуть во входящую очередь для повторной обработки.
-        /// </param>
-        public void Reject(bool requeue)
-        {
-            if (!this.requiresAccept || this.isAccepted)
-            {
-                return;
-            }
-
-            this.Channel.Reject(this, requeue);
-            this.isAccepted = true;
-        }
-
-        /// <summary>
-        /// Отсылает ответное сообщение.
-        /// </summary>
-        /// <param name="message">Ответное сообщение.</param>
-        public void ReplyWith(IMessage message)
-        {
-            if (!this.CanReply)
-            {
-                throw new BusConfigurationException("No ReplyToAddress or CorrelationId were found in delivery. Make sure that you have callback endpoint set.");
-            }
-
-            this.Channel.Reply(message, this.ReplyRoute, this.CorrelationId);
-        }
-
-        /// <summary>
-        /// Конвертирует полученную информацию в сообщение указанного типа.
-        /// </summary>
-        /// <typeparam name="T">Тип сообщения.</typeparam>
-        /// <returns>Сообщение указанного типа.</returns>
-        public Message<T> UnpackAs<T>() where T : class
-        {
-            IMessage message = this.Channel.UnpackAs(typeof(T), this);
-            return new Message<T>(message.Label, message.Headers, (T)message.Payload);
-        }
-
-        /// <summary>
-        /// Конвертирует полученную информацию в сообщение указанного типа.
-        /// </summary>
-        /// <param name="type">Тип сообщения.</param>
-        /// <returns>Сообщение указанного типа.</returns>
-        public IMessage UnpackAs(Type type)
-        {
-            return this.Channel.UnpackAs(type, this);
-        }
-
-        /// <summary>
-        /// Вычленяет заголовки из параметров сообщения.
-        /// </summary>
-        /// <param name="args">Параметры отправки сообщения.</param>
-        /// <returns>Заголовки сообщения.</returns>
-        private IDictionary<string, object> ExtractHeadersFrom(BasicDeliverEventArgs args)
-        {
-            var h = new Dictionary<string, object>(args.BasicProperties.Headers);
-
-            if (this.CorrelationId != null)
-            {
-                h[Contour.Headers.CorrelationId] = this.CorrelationId;
-            }
-
-            if (this.ReplyRoute != null)
-            {
-                h[Contour.Headers.ReplyRoute] = this.ReplyRoute;
-            }
-
-            return h;
-        }
-
-        private static string TryGetSanitizedBrokerUrl(string connectionString)
-        {
-            try
-            {
-                var uri = new Uri(connectionString);
-                var hostPort = uri.IsDefaultPort ? uri.Host : $"{uri.Host}:{uri.Port}";
-                var path = uri.AbsolutePath;
-                return $"{uri.Scheme}://{hostPort}{path}";
-            }
-            catch
+            if (Args.BasicProperties.ReplyTo == null)
             {
                 return null;
             }
+
+            var replyAddress = Args.BasicProperties.ReplyToAddress;
+            return new RabbitRoute(replyAddress.ExchangeName, replyAddress.RoutingKey);
         }
+    }
+
+    public async Task AcceptAsync(CancellationToken cancellationToken = default)
+    {
+        if (!this.requiresAccept || this.isAccepted)
+        {
+            return;
+        }
+
+        await Channel.Accept(this, cancellationToken);
+        this.isAccepted = true;
+    }
+
+    public IConsumingContext<T> BuildConsumingContext<T>(MessageLabel label = null) where T : class
+    {
+        Message<T> message = UnpackAs<T>();
+
+        if (label != null && !label.IsAny && !label.IsEmpty)
+        {
+            message = message with
+            {
+                Label = label
+            };
+        }
+
+        return new DefaultConsumingContext<T>(this.bus, message, this);
+    }
+
+    public Task ForwardAsync(MessageLabel label, object payload)
+    {
+        var headers = new Dictionary<string, object>(Headers);
+        headers[Contour.Headers.CorrelationId] = CorrelationId;
+        headers[Contour.Headers.ReplyRoute] = ReplyRoute;
+        if (!string.IsNullOrEmpty(Args.BasicProperties.Expiration) && long.TryParse(Args.BasicProperties.Expiration, out var expiration))
+        {
+            headers[Contour.Headers.Ttl] = TimeSpan.FromMilliseconds(expiration);
+        }
+        Contour.Headers.ApplyBreadcrumbs(headers, this.bus.Endpoint.Address);
+        Contour.Headers.ApplyOriginalMessageId(headers);
+
+        // TODO это костыль, как и само использование константы "document.contour.failed", возможно правильно было бы иметь отдельный метод ForwardToFault
+        return this.bus.EmitAsync(label, payload, new PublishingOptions
+        {
+            AdditionalHeaders = headers,
+            ForceConnectionKey = string.Equals(label.Name, SystemQueues.Fault, StringComparison.OrdinalIgnoreCase) || string.Equals(label.Name, SystemQueues.Unhandled, StringComparison.OrdinalIgnoreCase)
+                ? null
+                : Channel.ConnectionKey
+        });
+    }
+
+    public async Task RejectAsync(bool requeue, CancellationToken cancellationToken = default)
+    {
+        if (!this.requiresAccept || this.isAccepted)
+        {
+            return;
+        }
+
+        await Channel.Reject(this, requeue, cancellationToken);
+        this.isAccepted = true;
+    }
+
+    public async Task ReplyWithAsync<TReply>(Message<TReply> message, CancellationToken cancellationToken = default) where TReply : class
+    {
+        if (!CanReply)
+        {
+            throw new BusConfigurationException("No ReplyToAddress or CorrelationId were found in delivery. Make sure that you have callback endpoint set.");
+        }
+
+        await Channel.Reply(message, ReplyRoute, CorrelationId, cancellationToken);
+    }
+
+    public Message<T> UnpackAs<T>() where T : class
+    {
+        return Channel.UnpackAs<T>(this);
+    }
+
+    private IDictionary<string, object> ExtractHeadersFrom(BasicDeliverEventArgs args)
+    {
+        var h = args.BasicProperties.Headers != null
+            ? new Dictionary<string, object>(args.BasicProperties.Headers)
+            : new Dictionary<string, object>();
+
+        if (CorrelationId != null)
+        {
+            h[Contour.Headers.CorrelationId] = CorrelationId;
+        }
+
+        if (ReplyRoute != null)
+        {
+            h[Contour.Headers.ReplyRoute] = ReplyRoute;
+        }
+
+        return h;
     }
 }

@@ -1,68 +1,49 @@
-﻿// --------------------------------------------------------------------------------------------------------------------
-// <copyright file="LambdaUnhandledDeliveryStrategy.cs" company="">
-//   
-// </copyright>
-// <summary>
-//   The lambda unhandled delivery strategy.
-// </summary>
-// --------------------------------------------------------------------------------------------------------------------
+﻿using System.Threading.Tasks;
 
-namespace Contour.Receiving
+namespace Contour.Receiving;
+
+using System;
+
+using Microsoft.Extensions.Logging;
+
+/// <summary>
+/// The lambda unhandled delivery strategy.
+/// </summary>
+public class LambdaUnhandledDeliveryStrategy : IUnhandledDeliveryStrategy
 {
-    using System;
-
-    using Common.Logging;
+    private static readonly ILogger Log = LogManager.GetLogger<LambdaUnhandledDeliveryStrategy>();
 
     /// <summary>
-    /// The lambda unhandled delivery strategy.
+    /// The _handler action.
     /// </summary>
-    public class LambdaUnhandledDeliveryStrategy : IUnhandledDeliveryStrategy
+    private readonly Func<IUnhandledConsumingContext, Task> _handlerAction;
+
+    /// <summary>
+    /// Инициализирует новый экземпляр класса <see cref="LambdaUnhandledDeliveryStrategy"/>.
+    /// </summary>
+    /// <param name="handlerAction">
+    /// The handler action.
+    /// </param>
+    public LambdaUnhandledDeliveryStrategy(Func<IUnhandledConsumingContext, Task> handlerAction)
     {
-        #region Fields
+        this._handlerAction = handlerAction;
+    }
 
-        /// <summary>
-        /// The _handler action.
-        /// </summary>
-        private readonly Action<IUnhandledConsumingContext> _handlerAction;
-
-        #endregion
-
-        #region Constructors and Destructors
-
-        /// <summary>
-        /// Инициализирует новый экземпляр класса <see cref="LambdaUnhandledDeliveryStrategy"/>.
-        /// </summary>
-        /// <param name="handlerAction">
-        /// The handler action.
-        /// </param>
-        public LambdaUnhandledDeliveryStrategy(Action<IUnhandledConsumingContext> handlerAction)
+    /// <summary>
+    /// The handle.
+    /// </summary>
+    /// <param name="unhandledConsumingContext">
+    /// The unhandled consuming context.
+    /// </param>
+    public async Task Handle(IUnhandledConsumingContext unhandledConsumingContext)
+    {
+        try
         {
-            this._handlerAction = handlerAction;
+            await this._handlerAction(unhandledConsumingContext);
         }
-
-        #endregion
-
-        #region Public Methods and Operators
-
-        /// <summary>
-        /// The handle.
-        /// </summary>
-        /// <param name="unhandledConsumingContext">
-        /// The unhandled consuming context.
-        /// </param>
-        public void Handle(IUnhandledConsumingContext unhandledConsumingContext)
+        catch (Exception ex)
         {
-            try
-            {
-                this._handlerAction(unhandledConsumingContext);
-            }
-            catch (Exception ex)
-            {
-                LogManager.GetCurrentClassLogger().
-                    ErrorFormat("Unable to handle failed message [{0}].", ex, unhandledConsumingContext.Delivery.Label);
-            }
+            Log.LogError(ex, "Unable to handle failed message [{Label}]", unhandledConsumingContext.Delivery.Label);
         }
-
-        #endregion
     }
 }

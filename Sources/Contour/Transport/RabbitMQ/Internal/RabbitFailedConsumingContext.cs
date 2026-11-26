@@ -1,55 +1,41 @@
-﻿namespace Contour.Transport.RabbitMQ.Internal
-{
-    using System;
+﻿using System;
+using Contour.Receiving;
 
-    using Contour.Receiving;
+namespace Contour.Transport.RabbitMQ.Internal;
+
+/// <summary>
+/// The rabbit failed consuming context.
+/// </summary>
+internal class RabbitFailedConsumingContext : FaultedConsumingContext, IFailedConsumingContext
+{
+    /// <summary>
+    /// Инициализирует новый экземпляр класса <see cref="RabbitFailedConsumingContext"/>.
+    /// </summary>
+    /// <param name="delivery">
+    /// The delivery.
+    /// </param>
+    /// <param name="exception">
+    /// The exception.
+    /// </param>
+    public RabbitFailedConsumingContext(RabbitDelivery delivery, Exception exception)
+        : base(delivery)
+    {
+        Exception = exception;
+    }
 
     /// <summary>
-    /// The rabbit failed consuming context.
+    /// Gets the exception.
     /// </summary>
-    internal class RabbitFailedConsumingContext : FaultedConsumingContext, IFailedConsumingContext
+    public Exception Exception { get; private set; }
+
+    /// <summary>
+    /// The build fault message.
+    /// </summary>
+    /// <returns>
+    /// The <see cref="FaultMessage"/>.
+    /// </returns>
+    public override FaultMessage BuildFaultMessage()
     {
-        #region Constructors and Destructors
-
-        /// <summary>
-        /// Инициализирует новый экземпляр класса <see cref="RabbitFailedConsumingContext"/>.
-        /// </summary>
-        /// <param name="delivery">
-        /// The delivery.
-        /// </param>
-        /// <param name="exception">
-        /// The exception.
-        /// </param>
-        public RabbitFailedConsumingContext(RabbitDelivery delivery, Exception exception)
-            : base(delivery)
-        {
-            this.Exception = exception;
-        }
-
-        #endregion
-
-        #region Public Properties
-
-        /// <summary>
-        /// Gets the exception.
-        /// </summary>
-        public Exception Exception { get; private set; }
-
-        #endregion
-
-        #region Public Methods and Operators
-
-        /// <summary>
-        /// The build fault message.
-        /// </summary>
-        /// <returns>
-        /// The <see cref="FaultMessage"/>.
-        /// </returns>
-        public override FaultMessage BuildFaultMessage()
-        {
-            return new RabbitFaultMessage((RabbitDelivery)this.Delivery, this.Exception);
-        }
-
-        #endregion
+        return new RabbitFaultMessage((RabbitDelivery)Delivery, Exception);
     }
 }

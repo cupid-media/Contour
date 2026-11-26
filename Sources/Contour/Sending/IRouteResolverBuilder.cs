@@ -1,38 +1,24 @@
-﻿// --------------------------------------------------------------------------------------------------------------------
-// <copyright file="IRouteResolverBuilder.cs" company="">
-//   
-// </copyright>
-// <summary>
-//   The RouteResolverBuilder interface.
-// </summary>
-// --------------------------------------------------------------------------------------------------------------------
+﻿namespace Contour.Sending;
 
-namespace Contour.Sending
+using Topology;
+
+/// <summary>
+/// The RouteResolverBuilder interface.
+/// </summary>
+public interface IRouteResolverBuilder
 {
-    using Contour.Topology;
+    /// <summary>
+    /// Gets the endpoint.
+    /// </summary>
+    IEndpoint Endpoint { get; }
 
     /// <summary>
-    /// The RouteResolverBuilder interface.
+    /// Gets the sender.
     /// </summary>
-    public interface IRouteResolverBuilder
-    {
-        #region Public Properties
+    ISenderConfiguration Sender { get; }
 
-        /// <summary>
-        /// Gets the endpoint.
-        /// </summary>
-        IEndpoint Endpoint { get; }
-
-        /// <summary>
-        /// Gets the sender.
-        /// </summary>
-        ISenderConfiguration Sender { get; }
-
-        /// <summary>
-        /// Gets the topology.
-        /// </summary>
-        ITopologyBuilder Topology { get; }
-
-        #endregion
-    }
+    /// <summary>
+    /// Gets the topology.
+    /// </summary>
+    ITopologyBuilder Topology { get; }
 }

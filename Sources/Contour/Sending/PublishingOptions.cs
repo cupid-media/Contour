@@ -1,47 +1,43 @@
-﻿// --------------------------------------------------------------------------------------------------------------------
-// <copyright file="PublishingOptions.cs" company="">
-//   
-// </copyright>
-// <summary>
-//   The publishing options.
-// </summary>
-// --------------------------------------------------------------------------------------------------------------------
-
+﻿using System;
 using System.Collections.Generic;
 
-namespace Contour.Sending
-{
-    using System;
+namespace Contour.Sending;
 
-    using Contour.Helpers;
+/// <summary>
+/// The publishing options.
+/// </summary>
+public class PublishingOptions
+{
+    /// <summary>
+    /// Gets or sets the persistently.
+    /// </summary>
+    public bool? Persistently { get; set; }
 
     /// <summary>
-    /// The publishing options.
+    /// Gets or sets the ttl.
     /// </summary>
-    public class PublishingOptions
-    {
-        #region Public Properties
+    public TimeSpan? Ttl { get; set; }
 
-        /// <summary>
-        /// Gets or sets the persistently.
-        /// </summary>
-        public Maybe<bool> Persistently { get; set; }
+    /// <summary>
+    /// Gets or sets the ttl.
+    /// </summary>
+    public TimeSpan? Delay { get; set; }
 
-        /// <summary>
-        /// Gets or sets the ttl.
-        /// </summary>
-        public Maybe<TimeSpan?> Ttl { get; set; }
+    /// <summary>
+    /// Дополнительные заголовки
+    /// </summary>
+    public Dictionary<string, object> AdditionalHeaders { get; set; }
 
-        /// <summary>
-        /// Дополнительные заголовки
-        /// </summary>
-        public Dictionary<string, object> AdditionalHeaders { get; set; }
+    /// <summary>
+    /// Префикс заголовка x-breadcrumbs
+    /// </summary>
+    public string BreadcrumbsPrefix { get; set; }
 
-        /// <summary>
-        /// Префикс заголовка x-breadcrumbs
-        /// </summary>
-        public string BreadcrumbsPrefix { get; set; }
+    /// <summary>
+    /// Ключ сообщения. В Kafka сообщения с одним ключом попадают в одну партицию и читаются в порядке отправки.
+    /// RabbitMQ ключ не поддерживает.
+    /// </summary>
+    public string Key { get; set; }
 
-        #endregion
-    }
+    internal string ForceConnectionKey { get; set; }
 }

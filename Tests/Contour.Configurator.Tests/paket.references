@@ -1,7 +1,0 @@
-﻿Common.Logging
-RabbitMQ.Client
-
-Newtonsoft.Json
-FluentAssertions
-Moq
-NUnit

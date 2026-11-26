@@ -4,303 +4,121 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
-using Common.Logging;
-using Contour.Configuration;
-using Contour.Filters;
-using Contour.Helpers.CodeContracts;
-using Contour.Receiving;
 using Contour.Sending;
-using Contour.Transport.RabbitMQ.Topology;
+using Contour.Transport.RabbitMQ.Configuration;
+using Microsoft.Extensions.Logging;
 
-namespace Contour.Transport.RabbitMQ.Internal
+namespace Contour.Transport.RabbitMQ.Internal;
+
+/// <summary>
+/// Отправитель сообщений с помощью брокера <c>RabbitMQ</c>.
+/// </summary>
+internal class RabbitSender : AbstractSender<RabbitSenderOptions, RabbitBus, RabbitProducer>
 {
-    /// <summary>
-    /// Отправитель сообщений с помощью брокера <c>RabbitMQ</c>.
-    /// </summary>
-    internal class RabbitSender : AbstractSender
+    private readonly IConnectionPool<IRabbitConnection> connectionPool;
+    private readonly ConcurrentDictionary<Guid, RabbitProducer> producers = new();
+    private IFaultTolerantProducer faultTolerantProducer;
+
+    protected override ICollection<RabbitProducer> Producers => this.producers.Values;
+
+    public RabbitSender(RabbitBus bus, RabbitSenderOptions configuration, IConnectionPool<IRabbitConnection> connectionPool)
+        : base(bus, configuration)
     {
-        private readonly ILog logger;
-        private readonly RabbitBus bus;
-        private readonly IConnectionPool<IRabbitConnection> connectionPool;
-        private readonly ConcurrentQueue<IProducer> producers = new ConcurrentQueue<IProducer>();
-        private readonly RabbitSenderOptions senderOptions;
-        private IProducerSelector producerSelector;
-        private IFaultTolerantProducer faultTolerantProducer;
+        this.connectionPool = connectionPool;
+    }
 
-        /// <summary>
-        /// Initializes a new instance of the <see cref="RabbitSender"/> class. 
-        /// </summary>
-        /// <param name="bus">
-        /// A reference to the bus containing the sender
-        /// </param>
-        /// <param name="configuration">
-        /// Конфигурация отправителя сообщений.
-        /// </param>
-        /// <param name="connectionPool">
-        /// A bus connection pool
-        /// </param>
-        /// <param name="filters">
-        /// Фильтры сообщений.
-        /// </param>
-        public RabbitSender(RabbitBus bus, ISenderConfiguration configuration, IConnectionPool<IRabbitConnection> connectionPool, IEnumerable<IMessageExchangeFilter> filters)
-            : base(bus.Endpoint, configuration, filters)
+    protected override async Task StartProducers(CancellationToken cancellationToken)
+    {
+        await Task.WhenAll(Producers.Select(x => x.Start(cancellationToken)));
+    }
+
+    protected override async Task StopProducers(CancellationToken token)
+    {
+        this.Logger.LogTrace("Stopping producers for sender of [{Label}]", Configuration.Label);
+
+        foreach (var producer in Producers)
         {
-            this.bus = bus;
-            this.connectionPool = connectionPool;
-            this.senderOptions = (RabbitSenderOptions)this.Configuration.Options;
-
-            this.logger = LogManager.GetLogger($"{this.GetType().FullName}({this.bus.Endpoint}, {this.Configuration.Label})");
-        }
-
-        /// <summary>
-        /// Если <c>true</c> - запущен, иначе <c>false</c>.
-        /// </summary>
-        public bool IsStarted { get; private set; }
-
-        /// <summary>
-        /// Если <c>true</c> - отправитель работает без сбоев, иначе <c>false</c>.
-        /// </summary>
-        public override bool IsHealthy => this.IsStarted;
-
-        /// <summary>
-        /// Освобождает занятые ресурсы. И останавливает отправителя.
-        /// </summary>
-        public override void Dispose()
-        {
-            this.logger.Trace(m => m("Disposing sender of [{0}]", this.Configuration.Label));
-            this.Stop();
-        }
-
-        /// <summary>
-        /// Запускает отправителя.
-        /// </summary>
-        public override void Start()
-        {
-            if (this.IsStarted)
+            token.ThrowIfCancellationRequested();
+            try
             {
-                return;
+                await producer.Stop(token);
+                this.Logger.LogTrace("Producer stopped successfully");
             }
-
-            this.logger.Trace(m => m("Starting sender of [{0}]", this.Configuration.Label));
-
-            this.StartProducers();
-            this.IsStarted = true;
-        }
-
-        /// <summary>
-        /// Останавливает отправителя.
-        /// </summary>
-        public override void Stop()
-        {
-            if (!this.IsStarted)
+            catch (Exception ex)
             {
-                return;
-            }
-
-            this.logger.Trace(m => m("Stopping sender of [{0}]", this.Configuration.Label));
-
-            this.StopProducers();
-            this.faultTolerantProducer.Dispose();
-
-            this.IsStarted = false;
-        }
-
-        /// <summary>
-        /// Выполняет отправку сообщения.
-        /// </summary>
-        /// <param name="exchange">Информация об отправке.</param>
-        /// <returns>Задача ожидания отправки сообщения.</returns>
-        protected override Task<MessageExchange> InternalSend(MessageExchange exchange, string connectionKey)
-        {
-            return this.faultTolerantProducer.Send(exchange, connectionKey);
-        }
-
-        /// <summary>
-        /// Starts the producers
-        /// </summary>
-        private void StartProducers()
-        {
-            this.logger.Trace(m => m("Starting producers for sender of [{0}]", this.Configuration.Label));
-            this.Configure();
-
-            foreach (var producer in this.producers)
-            {
-                producer.Start();
+                this.Logger.LogError(ex, "Failed to stop producer [{ProducerId}] in sender of [{Label}] due to {Message}", producer.Id, Configuration.Label, ex.Message);
             }
         }
+    }
 
-        private void Configure()
+    protected override void ClearProducers()
+    {
+        this.producers?.Clear();
+        this.faultTolerantProducer = null;
+    }
+
+    protected override Task<EmitResult> InternalSend<TRequest>(Message<TRequest> message, PublishingOptions options)
+    {
+        return this.faultTolerantProducer.Send(message, options);
+    }
+
+    protected override Task<RequestResult<TResponse>> InternalRequest<TRequest, TResponse>(Message<TRequest> message, RequestOptions options)
+    {
+        return this.faultTolerantProducer.Request<TRequest, TResponse>(message, options);
+    }
+
+    protected override IEnumerable<string> GetUnsupportedOptions(PublishingOptions options)
+    {
+        foreach (var option in base.GetUnsupportedOptions(options))
         {
-            this.BuildProducers();
-            var builder = this.senderOptions.GetProducerSelectorBuilder();
-
-            this.producerSelector = builder.Build(this.producers);
-            
-            var sendAttempts = this.senderOptions.GetFailoverAttempts() ?? 1;
-            var maxRetryDelay = this.senderOptions.GetMaxRetryDelay().GetValueOrDefault();
-            var resetDelay = this.senderOptions.GetInactivityResetDelay().GetValueOrDefault();
-
-            this.faultTolerantProducer = new FaultTolerantProducer(this.producerSelector, sendAttempts, maxRetryDelay, resetDelay);
+            yield return option;
         }
 
-        /// <summary>
-        /// Stops the producers
-        /// </summary>
-        private void StopProducers()
+        if (options.Delay != null && !Configuration.Delayed)
         {
-            this.logger.Trace(m => m("Stopping producers for sender of [{0}]", this.Configuration.Label));
-
-            IProducer producer;
-            while (!this.producers.IsEmpty && this.producers.TryDequeue(out producer))
-            {
-                try
-                {
-                    producer.Stop();
-                    producer.Dispose();
-                    this.logger.Trace("Producer stopped successfully");
-                }
-                catch (Exception ex)
-                {
-                    this.logger.Error(
-                        $"Failed to stop producer [{producer}] in sender of [{this.Configuration.Label}] due to {ex.Message}");
-                }
-            }
+            yield return nameof(PublishingOptions.Delay);
         }
 
-        /// <summary>
-        /// Builds a set of producers constructing one producer for each URL in the connection string
-        /// </summary>
-        private void BuildProducers()
+        if (options.Key != null)
         {
-            this.logger.Trace(
-                $"Building producers of [{this.Configuration.Label}]:\r\n\t{string.Join("\r\n\t", this.senderOptions.RabbitConnectionString.Select(url => $"Producer({this.Configuration.Label}): URL\t=>\t{url}"))}");
+            yield return nameof(PublishingOptions.Key);
+        }
+    }
 
-            foreach (var url in this.senderOptions.RabbitConnectionString)
-            {
-                this.EnlistProducer(url);
-            }
+    /// <summary>
+    /// Builds a set of producers constructing one producer for each URL in the connection string
+    /// </summary>
+    protected override async Task PrepareProducers(CancellationToken token)
+    {
+        var connectionsString = new RabbitConnectionString(Configuration.ConnectionString);
+        this.Logger.LogTrace("Building producers of [{Label}]:\r\n\t{Producers}", Configuration.Label, string.Join("\r\n\t", connectionsString.Select(url => $"Producer({Configuration.Label}): URL\t=>\t{url}")));
+
+        foreach (var url in connectionsString)
+        {
+            token.ThrowIfCancellationRequested();
+            var producer = BuildProducer(url);
+            await producer.Prepare(token);
         }
 
-        private IProducer EnlistProducer(string url)
+        var builder = Configuration.ProducerSelectorBuilder;
+        var producerSelector = builder.Build(this.producers.Select(p => p.Value));
+        this.faultTolerantProducer = new FaultTolerantProducer(producerSelector, Configuration.FailoverAttempts);
+    }
+
+    private RabbitProducer BuildProducer(string url)
+    {
+        this.Logger.LogTrace("Enlisting a new producer of [{Label}] at URL=[{Url}]...", Configuration.Label, url);
+        var producer = new RabbitProducer(Bus, url, this.connectionPool, Configuration);
+
+        if (Configuration.RequiresCallback)
         {
-            this.logger.Trace($"Enlisting a new producer of [{this.Configuration.Label}] at URL=[{url}]...");
-            var producer = this.BuildProducer(url);
-
-            this.producers.Enqueue(producer);
-            this.logger.Trace($"A producer of [{producer.Label}] at URL=[{producer.BrokerUrl}] has been enlisted");
-
-            return producer;
+            producer.WithCallback();
+            this.Logger.LogTrace("A producer of [{Label}] at URL=[{BrokerUrl}] has registered a callback listener successfully", producer.Label, producer.BrokerUrl);
         }
 
-        private Producer BuildProducer(string url)
-        {
-            var reuseConnectionProperty = this.senderOptions.GetReuseConnection();
-            var reuseConnection = reuseConnectionProperty.HasValue && reuseConnectionProperty.Value;
+        this.producers.TryAdd(producer.Id, producer);
+        this.Logger.LogTrace("A producer of [{Label}] at URL=[{BrokerUrl}] has been enlisted", producer.Label, producer.BrokerUrl);
 
-            var source = new CancellationTokenSource();
-            var connection = this.connectionPool.Get(url, reuseConnection, source.Token);
-            this.logger.Trace($"Using connection [{connection.Id}] at URL=[{url}] to resolve a producer");
-
-            using (var topologyBuilder = new TopologyBuilder(connection))
-            {
-                var builder = new RouteResolverBuilder(this.bus.Endpoint, topologyBuilder, this.Configuration);
-                var routeResolverBuilderFunc = this.Configuration.Options.GetRouteResolverBuilder();
-
-                Assumes.True(
-                    routeResolverBuilderFunc.HasValue,
-                    "RouteResolverBuilder must be set for [{0}]",
-                    this.Configuration.Label);
-
-                var routeResolver = routeResolverBuilderFunc.Value(builder);
-
-                var producer = new Producer(
-                    this.bus.Endpoint,
-                    connection,
-                    this.Configuration.Label,
-                    routeResolver,
-                    this.Configuration.Options.IsConfirmationRequired());
-
-                if (this.Configuration.RequiresCallback)
-                {
-                    var callbackConfiguration = this.CreateCallbackReceiverConfiguration(url);
-                    var receiver = this.bus.RegisterReceiver(callbackConfiguration, true);
-
-                    this.logger.Trace(
-                        $"A sender of [{this.Configuration.Label}] requires a callback configuration; registering a receiver of [{callbackConfiguration.Label}] with connection string [{callbackConfiguration.Options.GetConnectionString()}]");
-
-                    this.logger.Trace(
-                        $"A new callback receiver of [{callbackConfiguration.Label}] with connection string [{callbackConfiguration.Options.GetConnectionString()}] has been successfully registered, getting one of its listeners with URL=[{producer.BrokerUrl}]...");
-
-                    var listener = receiver.GetListener(l => l.BrokerUrl == producer.BrokerUrl);
-
-                    if (listener == null)
-                    {
-                        throw new BusConfigurationException(
-                            $"Unable to find a suitable listener for receiver {receiver}");
-                    }
-
-                    this.logger.Trace(
-                        $"A listener at URL=[{listener.BrokerUrl}] belonging to callback receiver of [{callbackConfiguration.Label}] acquired");
-                    
-                    listener.StopOnChannelShutdown = true;
-                    producer.UseCallbackListener(listener);
-
-                    this.logger.Trace(
-                        $"A producer of [{producer.Label}] at URL=[{producer.BrokerUrl}] has registered a callback listener successfully");
-                }
-
-                producer.StopOnChannelShutdown = true;
-                producer.Stopped += (sender, args) =>
-                {
-                    this.OnProducerStopped(url, sender, args);
-                };
-
-                return producer;
-            }
-        }
-
-        private void OnProducerStopped(string url, object sender, ProducerStoppedEventArgs args)
-        {
-            if (args.Reason == OperationStopReason.Regular)
-            {
-                return;
-            }
-
-            this.logger.Warn($"Producer [{sender.GetHashCode()}] has been stopped and will be reenlisted");
-
-            while (true)
-            {
-                IProducer delistedProducer;
-                if (this.producers.TryDequeue(out delistedProducer))
-                {
-                    if (sender == delistedProducer)
-                    {
-                        this.logger.Trace($"Producer [{delistedProducer.GetHashCode()}] has been delisted");
-                        break;
-                    }
-
-                    this.producers.Enqueue(delistedProducer);
-                }
-            }
-
-            var newProducer = this.EnlistProducer(url);
-            newProducer.Start();
-        }
-
-        /// <summary>
-        /// Overrides the callback configuration connection string with <paramref name="url"/>
-        /// since the callback configuration may contain a list of connection strings for sharding support.
-        /// </summary>
-        /// <param name="url">The connection string URL</param>
-        /// <returns>The reply receiver configuration</returns>
-        private ReceiverConfiguration CreateCallbackReceiverConfiguration(string url)
-        {
-            var callbackConfiguration = new ReceiverConfiguration(
-                MessageLabel.Any,
-                this.Configuration.CallbackConfiguration.Options);
-
-            callbackConfiguration.WithConnectionString(url);
-            return callbackConfiguration;
-        }
+        return producer;
     }
 }

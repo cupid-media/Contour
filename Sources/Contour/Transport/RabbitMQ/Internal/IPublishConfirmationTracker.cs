@@ -1,51 +1,46 @@
-﻿namespace Contour.Transport.RabbitMQ.Internal
-{
-    using System;
-    using System.Threading.Tasks;
+﻿using System;
+using System.Threading.Tasks;
 
+namespace Contour.Transport.RabbitMQ.Internal;
+
+/// <summary>
+/// The confirmation handler.
+/// </summary>
+/// <param name="isConfirmed">
+/// The is confirmed.
+/// </param>
+/// <param name="seqNo">
+/// The seq no.
+/// </param>
+/// <param name="isMultiple">
+/// The is multiple.
+/// </param>
+internal delegate Task ConfirmationHandler(bool isConfirmed, ulong seqNo, bool isMultiple);
+
+/// <summary>
+/// The PublishConfirmationTracker interface.
+/// </summary>
+internal interface IPublishConfirmationTracker : IDisposable
+{
     /// <summary>
-    /// The confirmation handler.
+    /// The handle confirmation.
     /// </summary>
-    /// <param name="isConfirmed">
+    /// <param name="confirmed">
     /// The is confirmed.
     /// </param>
-    /// <param name="seqNo">
+    /// <param name="sequenceNumber">
     /// The seq no.
     /// </param>
-    /// <param name="isMultiple">
+    /// <param name="multiple">
     /// The is multiple.
     /// </param>
-    internal delegate void ConfirmationHandler(bool isConfirmed, ulong seqNo, bool isMultiple);
+    Task HandleConfirmation(bool confirmed, ulong sequenceNumber, bool multiple);
 
     /// <summary>
-    /// The PublishConfirmationTracker interface.
+    /// The track.
     /// </summary>
-    internal interface IPublishConfirmationTracker : IDisposable
-    {
-        #region Public Methods and Operators
-
-        /// <summary>
-        /// The handle confirmation.
-        /// </summary>
-        /// <param name="confirmed">
-        /// The is confirmed.
-        /// </param>
-        /// <param name="sequenceNumber">
-        /// The seq no.
-        /// </param>
-        /// <param name="multiple">
-        /// The is multiple.
-        /// </param>
-        void HandleConfirmation(bool confirmed, ulong sequenceNumber, bool multiple);
-
-        /// <summary>
-        /// The track.
-        /// </summary>
-        /// <returns>
-        /// The <see cref="Task"/>.
-        /// </returns>
-        Task Track();
-
-        #endregion
-    }
+    /// <returns>
+    /// The <see cref="Task"/>.
+    /// </returns>
+    Task Track(ulong nextSequenceNumber);
 }

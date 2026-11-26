@@ -1,57 +1,44 @@
 ﻿using System;
 using System.Threading;
+using System.Threading.Tasks;
 
-namespace Contour
+namespace Contour;
+
+/// <summary>
+/// Describes a bus connection
+/// </summary>
+public interface IConnection : IAsyncDisposable
 {
     /// <summary>
-    /// Describes a bus connection
+    /// Connection identifier
     /// </summary>
-    public interface IConnection : IDisposable
-    {
-        /// <summary>
-        /// Fired when a connection has been opened
-        /// </summary>
-        event EventHandler Opened;
+    Guid Id { get; }
 
-        /// <summary>
-        /// Fired when a connection has been closed
-        /// </summary>
-        event EventHandler Closed;
+    bool IsActive { get; }
 
-        /// <summary>
-        /// Fired when a connection has been disposed
-        /// </summary>
-        event EventHandler Disposed;
+    /// <summary>
+    /// Connection string
+    /// </summary>
+    string ConnectionString { get; }
 
-        /// <summary>
-        /// Connection identifier
-        /// </summary>
-        Guid Id { get; }
+    /// <summary>
+    /// Ключ строки подключения, который может идентифицировать подключение по параметрам из connString, для RMQ IP + Port + vhost
+    /// </summary>
+    string ConnectionKey { get; }
 
-        /// <summary>
-        /// Connection string
-        /// </summary>
-        string ConnectionString { get; }
+    /// <summary>
+    /// Opens the connection
+    /// </summary>
+    /// <param name="token">A token to cancel the operation</param>
+    Task Open(CancellationToken token);
 
-        /// <summary>
-        /// Ключ строки подключения, который может идентифицировать подключение по параметрам из connString, для RMQ IP + Port + vhost
-        /// </summary>
-        string ConnectionKey { get; }
+    /// <summary>
+    /// Closes the connection
+    /// </summary>
+    Task Close();
 
-        /// <summary>
-        /// Opens the connection
-        /// </summary>
-        /// <param name="token">A token to cancel the operation</param>
-        void Open(CancellationToken token);
-
-        /// <summary>
-        /// Closes the connection
-        /// </summary>
-        void Close();
-
-        /// <summary>
-        /// Aborts the connection
-        /// </summary>
-        void Abort();
-    }
+    /// <summary>
+    /// Aborts the connection
+    /// </summary>
+    Task Abort(CancellationToken token);
 }

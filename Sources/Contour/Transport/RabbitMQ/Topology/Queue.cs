@@ -3,146 +3,143 @@
 using Contour.Receiving;
 using Contour.Topology;
 
-namespace Contour.Transport.RabbitMQ.Topology
+namespace Contour.Transport.RabbitMQ.Topology;
+
+/// <summary>
+/// Описание очереди <c>RabbitMq</c>.
+/// </summary>
+public class Queue : ITopologyEntity, IListeningSource
 {
     /// <summary>
-    /// Описание очереди <c>RabbitMq</c>.
+    /// Инициализирует новый экземпляр класса <see cref="Queue"/>.
     /// </summary>
-    public class Queue : ITopologyEntity, IListeningSource
+    /// <param name="name">
+    /// Имя очереди.
+    /// </param>
+    internal Queue(string name)
     {
-        /// <summary>
-        /// Инициализирует новый экземпляр класса <see cref="Queue"/>.
-        /// </summary>
-        /// <param name="name">
-        /// Имя очереди.
-        /// </param>
-        internal Queue(string name)
+        Name = name;
+        Durable = false;
+        Exclusive = false;
+        AutoDelete = false;
+    }
+
+    /// <summary>
+    /// Адрес очереди.
+    /// </summary>
+    public string Address => Name;
+
+    /// <summary>
+    /// Признак удаляемой очереди.
+    /// </summary>
+    public bool AutoDelete { get; internal set; }
+
+    /// <summary>
+    /// Признак надежности очереди.
+    /// </summary>
+    public bool Durable { get; internal set; }
+
+    /// <summary>
+    /// Признак эксклюзивности очереди.
+    /// </summary>
+    public bool Exclusive { get; internal set; }
+
+    /// <summary>
+    /// Имя очереди.
+    /// </summary>
+    public string Name { get; internal set; }
+
+    /// <summary>
+    /// Время жизни сообщений в очереди.
+    /// </summary>
+    public TimeSpan? Ttl { get; internal set; }
+
+    /// <summary>
+    /// Максимальное количество сообщений в очереди.
+    /// </summary>
+    public int? Limit { get; internal set; }
+
+    /// <summary>
+    /// Максимальное количество байт, которое занимают сообщения в очереди.
+    /// </summary>
+    public int? MaxLengthBytes { get; internal set; }
+
+    /// <summary>
+    /// Создает экземпляр построителя очереди с именем <paramref name="name"/>.
+    /// </summary>
+    /// <param name="name">
+    /// Имя создаваемой очереди.
+    /// </param>
+    /// <returns>
+    /// Построитель очереди <see cref="QueueBuilder"/>.
+    /// </returns>
+    public static QueueBuilder Named(string name)
+    {
+        return new QueueBuilder(name);
+    }
+
+    /// <summary>
+    /// Выполняет сравнение двух очередей.
+    /// </summary>
+    /// <param name="obj">
+    /// Сравниваемая очередь.
+    /// </param>
+    /// <returns>
+    /// <c>true</c> - если объекты равны, иначе <c>false</c>.
+    /// </returns>
+    public override bool Equals(object obj)
+    {
+        if (ReferenceEquals(null, obj))
         {
-            this.Name = name;
-            this.Durable = false;
-            this.Exclusive = false;
-            this.AutoDelete = false;
+            return false;
         }
 
-        /// <summary>
-        /// Адрес очереди.
-        /// </summary>
-        public string Address => this.Name;
-
-        /// <summary>
-        /// Признак удаляемой очереди.
-        /// </summary>
-        public bool AutoDelete { get; internal set; }
-
-        /// <summary>
-        /// Признак надежности очереди.
-        /// </summary>
-        public bool Durable { get; internal set; }
-
-        /// <summary>
-        /// Признак эксклюзивности очереди.
-        /// </summary>
-        public bool Exclusive { get; internal set; }
-
-        /// <summary>
-        /// Имя очереди.
-        /// </summary>
-        public string Name { get; internal set; }
-
-        /// <summary>
-        /// Время жизни сообщений в очереди.
-        /// </summary>
-        public TimeSpan? Ttl { get; internal set; }
-
-        /// <summary>
-        /// Максимальное количество сообщений в очереди.
-        /// </summary>
-        public int? Limit { get; internal set; }
-
-        /// <summary>
-        /// Максимальное количество байт, которое занимают сообщения в очереди.
-        /// </summary>
-        public int? MaxLengthBytes { get; internal set; }
-
-        /// <summary>
-        /// Создает экземпляр построителя очереди с именем <paramref name="name"/>.
-        /// </summary>
-        /// <param name="name">
-        /// Имя создаваемой очереди.
-        /// </param>
-        /// <returns>
-        /// Построитель очереди <see cref="QueueBuilder"/>.
-        /// </returns>
-        public static QueueBuilder Named(string name)
+        if (ReferenceEquals(this, obj))
         {
-            return new QueueBuilder(name);
-
-            // TODO: странная зависимость создаваемого объекта от создателя.
+            return true;
         }
 
-        /// <summary>
-        /// Выполняет сравнение двух очередей.
-        /// </summary>
-        /// <param name="obj">
-        /// Сравниваемая очередь.
-        /// </param>
-        /// <returns>
-        /// <c>true</c> - если объекты равны, иначе <c>false</c>.
-        /// </returns>
-        public override bool Equals(object obj)
+        if (obj.GetType() != GetType())
         {
-            if (ReferenceEquals(null, obj))
-            {
-                return false;
-            }
-
-            if (ReferenceEquals(this, obj))
-            {
-                return true;
-            }
-
-            if (obj.GetType() != this.GetType())
-            {
-                return false;
-            }
-
-            return this.Equals((Queue)obj);
+            return false;
         }
 
-        /// <summary>
-        /// Рассчитывает код хеширования для очереди.
-        /// </summary>
-        /// <returns>
-        /// Код хеширования значение очереди.
-        /// </returns>
-        public override int GetHashCode()
-        {
-            return this.Name != null ? this.Name.GetHashCode() : 0;
-        }
+        return Equals((Queue)obj);
+    }
 
-        /// <summary>
-        /// Конвертирует очередь в строку.
-        /// </summary>
-        /// <returns>
-        /// Строковое представление очереди.
-        /// </returns>
-        public override string ToString()
-        {
-            return $"{this.Name}";
-        }
+    /// <summary>
+    /// Рассчитывает код хеширования для очереди.
+    /// </summary>
+    /// <returns>
+    /// Код хеширования значение очереди.
+    /// </returns>
+    public override int GetHashCode()
+    {
+        return Name != null ? Name.GetHashCode() : 0;
+    }
 
-        /// <summary>
-        /// Выполняет сравнение двух очередей.
-        /// </summary>
-        /// <param name="other">
-        /// Сравниваемая очередь.
-        /// </param>
-        /// <returns>
-        /// <c>true</c> - если объекты равны, иначе <c>false</c>.
-        /// </returns>
-        protected bool Equals(Queue other)
-        {
-            return string.Equals(this.Name, other.Name);
-        }
+    /// <summary>
+    /// Конвертирует очередь в строку.
+    /// </summary>
+    /// <returns>
+    /// Строковое представление очереди.
+    /// </returns>
+    public override string ToString()
+    {
+        return $"{Name}";
+    }
+
+    /// <summary>
+    /// Выполняет сравнение двух очередей.
+    /// </summary>
+    /// <param name="other">
+    /// Сравниваемая очередь.
+    /// </param>
+    /// <returns>
+    /// <c>true</c> - если объекты равны, иначе <c>false</c>.
+    /// </returns>
+    protected bool Equals(Queue other)
+    {
+        return string.Equals(Name, other.Name);
     }
 }

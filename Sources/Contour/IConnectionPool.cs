@@ -1,20 +1,14 @@
 ﻿using System;
 using System.Threading;
+using System.Threading.Tasks;
 
-namespace Contour
+namespace Contour;
+
+internal interface IConnectionPool<TConnection> : IAsyncDisposable where TConnection : class, IConnection
 {
-    internal interface IConnectionPool<out TConnection> : IDisposable where TConnection : class, IConnection
-    {
-        event EventHandler ConnectionOpened;
+    int Count { get; }
 
-        event EventHandler ConnectionClosed;
+    Task<TConnection> Get(string connectionString, bool reusable, CancellationToken token);
 
-        event EventHandler ConnectionDisposed;
-
-        int Count { get; }
-
-        TConnection Get(string connectionString, bool reusable, CancellationToken token);
-
-        void Drop();
-    }
+    Task Drop();
 }

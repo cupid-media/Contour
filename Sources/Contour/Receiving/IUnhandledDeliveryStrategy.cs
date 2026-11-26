@@ -1,29 +1,17 @@
-﻿// --------------------------------------------------------------------------------------------------------------------
-// <copyright file="IUnhandledDeliveryStrategy.cs" company="">
-//   
-// </copyright>
-// <summary>
-//   The UnhandledDeliveryStrategy interface.
-// </summary>
-// --------------------------------------------------------------------------------------------------------------------
+﻿using System.Threading.Tasks;
 
-namespace Contour.Receiving
+namespace Contour.Receiving;
+
+/// <summary>
+/// The UnhandledDeliveryStrategy interface.
+/// </summary>
+public interface IUnhandledDeliveryStrategy
 {
     /// <summary>
-    /// The UnhandledDeliveryStrategy interface.
+    /// The handle.
     /// </summary>
-    public interface IUnhandledDeliveryStrategy
-    {
-        #region Public Methods and Operators
-
-        /// <summary>
-        /// The handle.
-        /// </summary>
-        /// <param name="unhandledConsumingContext">
-        /// The unhandled consuming context.
-        /// </param>
-        void Handle(IUnhandledConsumingContext unhandledConsumingContext);
-
-        #endregion
-    }
+    /// <param name="unhandledConsumingContext">
+    /// The unhandled consuming context.
+    /// </param>
+    Task Handle(IUnhandledConsumingContext unhandledConsumingContext);
 }

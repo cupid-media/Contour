@@ -1,51 +1,23 @@
 ﻿<?xml version="1.0" encoding="utf-8"?>
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
-    <TargetFramework>netstandard2.0</TargetFramework>
-    <IsPackable>true</IsPackable>
-    <PackageId>Contour</PackageId>
-    <Version>3.3.0</Version>
-    <PackageReleaseNotes>Add distributed tracing</PackageReleaseNotes>
-    <PackageTags>contour servicebus bus</PackageTags>
-    <PackageLicenseExpression>MIT</PackageLicenseExpression>
-    <RepositoryUrl>https://github.com/SDVentures/Contour</RepositoryUrl>
-    <RepositoryType>git</RepositoryType>
-    <PackageProjectUrl>https://github.com/SDVentures/Contour</PackageProjectUrl>
-    <PackageReadmeFile>README.md</PackageReadmeFile>
-    <Copyright>Social Discovery Group © 2026</Copyright>
-    <Description>The package contains abstract interfaces of service bus and specific transport implementation for AMQP/RabbitMQ</Description>
+    <TargetFrameworks>net6.0;net8.0;net10.0</TargetFrameworks>
+    <Copyright>Social Discovery Ventures © 2022</Copyright>
     <Company>Social Discovery Ventures</Company>
-    <Authors>SDV Team, Cupid Media Team</Authors>
-    <GeneratePackageOnBuild>true</GeneratePackageOnBuild>
-    <LangVersion>12</LangVersion>
-    <TargetsForPack>$(TargetsForPack);_PrintPackageOutput</TargetsForPack>
-    <Title>Contour Service Bus</Title>
+    <Authors>SDV Team</Authors>
+    <LangVersion>latest</LangVersion>
   </PropertyGroup>
-  
+
   <ItemGroup>
-    <None Include="..\..\README.md" Pack="true" PackagePath="" />
-  </ItemGroup>
-  
-  <ItemGroup>
-    <PackageReference Include="Common.Logging" Version="3.4.1" />
-    <PackageReference Include="RabbitMQ.Client" Version="6.1.0" />
-    <PackageReference Include="System.Collections.Immutable" Version="1.7.0" />
-    <PackageReference Include="System.Configuration.ConfigurationManager" Version="[4.5.0,)" />
-    <PackageReference Include="System.Diagnostics.DiagnosticSource" Version="8.0.1" />
+    <PackageReference Include="Microsoft.Extensions.Logging" Version="8.0.0" />
+    <PackageReference Include="RabbitMQ.Client" Version="7.1.2" />
+    <PackageReference Include="Confluent.Kafka" Version="2.5.3" />
   </ItemGroup>
 
-  <Target Name="_PrintPackageOutput" AfterTargets="Pack">
-    <PropertyGroup>
-      <_OutDir>$(PackageOutputPath)</_OutDir>
-      <_OutDir Condition="'$(_OutDir)' == ''">$(OutputPath)</_OutDir>
-      <_PkgVersion>$(PackageVersion)</_PkgVersion>
-      <_PkgVersion Condition="'$(_PkgVersion)' == ''">$(Version)</_PkgVersion>
-      <_PkgName>$(PackageId).$(_PkgVersion).nupkg</_PkgName>
-      <_PkgFull>$(_OutDir)$([System.IO.Path]::DirectorySeparatorChar)$(_PkgName)</_PkgFull>
-    </PropertyGroup>
-    <Message Importance="High" Text="Package created: $(_PkgFull)" Condition="Exists('$(_PkgFull)')" />
-    <Message Importance="High" Text="Package created in: $(_OutDir)" Condition="!Exists('$(_PkgFull)')" />
-    <Exec Command="echo Package created: $(_PkgFull)" Condition="Exists('$(_PkgFull)')" />
-    <Exec Command="echo Package created in: $(_OutDir)" Condition="!Exists('$(_PkgFull)')" />
-  </Target>
+  <ItemGroup Condition="'$(TargetFramework)' == 'net10.0'">
+      <PackageReference Include="System.Configuration.ConfigurationManager" Version="8.0.0" />
+  </ItemGroup>
+  <ItemGroup Condition="'$(TargetFramework)' == 'net8.0' Or '$(TargetFramework)' == 'net6.0'">
+      <PackageReference Include="System.Configuration.ConfigurationManager" Version="7.0.0" />
+    </ItemGroup>
 </Project>

@@ -1,37 +1,13 @@
-﻿// --------------------------------------------------------------------------------------------------------------------
-// <copyright file="IReceiver.cs" company="">
-//   
-// </copyright>
-// <summary>
-//   The Receiver interface.
-// </summary>
-// --------------------------------------------------------------------------------------------------------------------
+﻿using Contour.Receiving.Consumers;
 
-namespace Contour.Receiving
+namespace Contour.Receiving;
+
+/// <summary>
+/// The Receiver interface.
+/// </summary>
+public interface IReceiver : IBusComponent
 {
-    using Contour.Configuration;
-    using Contour.Receiving.Consumers;
+    void RegisterConsumer<T>(IConsumer<T> consumer) where T : class;
 
-    /// <summary>
-    /// The Receiver interface.
-    /// </summary>
-    public interface IReceiver : IBusComponent
-    {
-        #region Public Methods and Operators
-
-        /// <summary>
-        /// The register consumer.
-        /// </summary>
-        /// <param name="label">
-        /// The label.
-        /// </param>
-        /// <param name="consumer">
-        /// The consumer.
-        /// </param>
-        /// <typeparam name="T">
-        /// </typeparam>
-        void RegisterConsumer<T>(MessageLabel label, IConsumer<T> consumer) where T : class;
-
-        #endregion
-    }
+    int ActiveRequestsCount { get; }
 }

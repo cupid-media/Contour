@@ -1,183 +1,147 @@
 ﻿using System;
-using System.Collections.Generic;
+using System.Threading;
 using System.Threading.Tasks;
-
-using Contour.Configuration;
 using Contour.Sending;
 
-namespace Contour
+namespace Contour;
+
+/// <summary>
+///   Клиент шины сообщений.
+///   Используется для управления циклом жизни клиента шины, а также для передачи сообщений.
+/// </summary>
+public interface IBus : IAsyncDisposable
 {
     /// <summary>
-    ///   Клиент шины сообщений.
-    ///   Используется для управления циклом жизни клиента шины, а также для передачи сообщений.
+    ///   Описание экземпляра шины
     /// </summary>
-    public interface IBus : IBusContext, IDisposable
-    {
-        /// <summary>
-        ///   Событие подключения к брокеру
-        /// </summary>
-        [Obsolete("Bus is no longer responsible for connection handling")]
-        event Action<IBus, EventArgs> Connected;
+    IEndpoint Endpoint { get; }
 
-        /// <summary>
-        ///   Событие разрыва соединения с брокером
-        /// </summary>
-        [Obsolete("Bus is no longer responsible for connection handling")]
-        event Action<IBus, EventArgs> Disconnected;
+    /// <summary>
+    ///   Транспорт, на котором работает шина: <see cref="BusTransports.Rmq"/> или
+    ///   <see cref="BusTransports.Kafka"/>. Позволяет вызывающему коду — например метрикам —
+    ///   различать шины, не зная их конкретных типов.
+    /// </summary>
+    string Transport { get; }
 
-        /// <summary>
-        ///   Событие окончания запуска шины
-        /// </summary>
-        event Action<IBus, EventArgs> Started;
+    /// <summary>
+    /// Количество сообщений, которые в данный момент обрабатываются шиной
+    /// </summary>
+    int ActiveRequestsCount { get; }
 
-        /// <summary>
-        ///   Событие начала запуска шины
-        /// </summary>
-        event Action<IBus, EventArgs> Starting;
+    /// <summary>
+    ///   Установлен при полной готовности шины.
+    /// </summary>
+    bool IsReady { get; }
 
-        /// <summary>
-        ///   Событие окончания остановки шины
-        /// </summary>
-        event Action<IBus, EventArgs> Stopped;
+    /// <summary>
+    ///   Шина запущена и все её компоненты работоспособны. В отличие от <see cref="IsReady"/>,
+    ///   отражает не только состояние шины, но и живость её отправителей и получателей,
+    ///   поэтому подходит для health/liveness-проб.
+    /// </summary>
+    bool IsHealthy { get; }
 
-        /// <summary>
-        ///   Событие начала остановки шины
-        /// </summary>
-        event Action<IBus, EventArgs> Stopping;
+    /// <summary>
+    /// Состояние шины
+    /// </summary>
+    BusState State { get; }
 
-        /// <summary>
-        ///   Конфигурация шины
-        /// </summary>
-        IBusConfiguration Configuration { get; }
+    /// <summary>
+    ///   Событие окончания запуска шины
+    /// </summary>
+    event Action<IBus> Started;
 
-        /// <summary>
-        ///   Позволяет определить, запущен ли данный экземпляр шины
-        /// </summary>
-        bool IsStarted { get; }
+    /// <summary>
+    ///   Событие начала запуска шины
+    /// </summary>
+    event Action<IBus> Starting;
 
-        /// <summary>
-        /// Отправляет сообщение с указанной меткой.
-        /// </summary>
-        /// <remarks>Метка сообщения должна быть зарегистрирована.</remarks>
-        /// <typeparam name="T"><c>.NET</c> тип отправляемого сообщения.
-        /// </typeparam>
-        /// <param name="label">Метка отправляемого сообщения.</param>
-        /// <param name="payload">Отправляемое сообщение.</param>
-        /// <param name="options">Настройки отправителя.</param>
-        /// <returns>
-        /// Задача ожидания отправки.
-        /// </returns>
-        new Task Emit<T>(string label, T payload, PublishingOptions options = null) where T : class;
+    /// <summary>
+    ///   Событие окончания остановки шины
+    /// </summary>
+    event Action<IBus> Stopped;
 
-        /// <summary>
-        /// Отправляет сообщение с указанной меткой.
-        /// </summary>
-        /// <typeparam name="T"><c>.NET</c> тип отправляемого сообщения.</typeparam>
-        /// <param name="label">Метка отправляемого сообщения.</param>
-        /// <param name="payload">Отправляемое сообщение.</param>
-        /// <param name="options">Настройки отправки.</param>
-        /// <returns>Задача ожидания отправки.</returns>
-        new Task Emit<T>(MessageLabel label, T payload, PublishingOptions options = null) where T : class;
+    /// <summary>
+    ///   Событие начала остановки шины
+    /// </summary>
+    event Action<IBus> Stopping;
 
-        /// <summary>
-        /// Отправляет сообщение с указанной меткой.
-        /// </summary>
-        /// <param name="label">Метка отправляемого сообщения.</param>
-        /// <param name="payload">Отправляемое сообщение.</param>
-        /// <param name="headers">Заголовки отправляемого сообщения.</param>
-        /// <returns>
-        /// <returns>Задача ожидания отправки.</returns>
-        /// </returns>
-        new Task Emit(MessageLabel label, object payload, IDictionary<string, object> headers);
+    /// <summary>
+    /// Конфигурирование и запуск клиента шины.
+    /// </summary>
+    /// <returns>Задача запускающая шину.</returns>
+    Task Start(CancellationToken cancellationToken = default);
 
-        /// <summary>
-        /// Выполняет синхронный запрос данных с указанной меткой.
-        /// </summary>
-        /// <typeparam name="TRequest">Тип данных запроса.</typeparam>
-        /// <typeparam name="TResponse">Тип ожидаемого ответа.</typeparam>
-        /// <param name="label">Метка отправляемого запроса.</param>
-        /// <param name="request">Отправляемое сообщение</param>
-        /// <param name="responseAction">Действие которое нужно выполнить при получении ответного сообщения. </param>
-        new void Request<TRequest, TResponse>(string label, TRequest request, Action<TResponse> responseAction)
-            where TRequest : class
-            where TResponse : class;
+    /// <summary>
+    /// Предварительное конфигурирование клиента шины без его запуска.
+    /// </summary>
+    /// <returns>Задача конфигурирующая шину.</returns>
+    Task Prepare(CancellationToken cancellationToken = default);
 
-        /// <summary>
-        /// Выполняет синхронный запрос данных с указанной меткой.
-        /// </summary>
-        /// <typeparam name="TRequest">Тип данных запроса. </typeparam>
-        /// <typeparam name="TResponse">Тип ожидаемого ответа.</typeparam>
-        /// <param name="label">Метка отправляемого запроса.</param>
-        /// <param name="request">Отправляемое сообщение.</param>
-        /// <param name="responseAction">Действие которое нужно выполнить при получении ответного сообщения.</param>
-        new void Request<TRequest, TResponse>(MessageLabel label, TRequest request, Action<TResponse> responseAction)
-            where TRequest : class
-            where TResponse : class;
+    /// <summary>
+    ///   Остановка клиента шины.
+    /// </summary>
+    Task Stop(CancellationToken cancellationToken = default);
 
-        /// <summary>Выполняет синхронный запрос данных с указанной меткой.</summary>
-        /// <typeparam name="TRequest">Тип данных запроса.</typeparam>
-        /// <typeparam name="TResponse">Тип ожидаемого ответа.</typeparam>
-        /// <param name="label">Метка отправляемого запроса.</param>
-        /// <param name="request">Отправляемое сообщение.</param>
-        /// <param name="options">Настройки отправителя.</param>
-        /// <param name="responseAction">Действие которое нужно выполнить при получении ответного сообщения.</param>
-        new void Request<TRequest, TResponse>(string label, TRequest request, RequestOptions options, Action<TResponse> responseAction)
-            where TRequest : class
-            where TResponse : class;
+    /// <summary>
+    /// Останавливает получение сообщений, но не останавливает отправку. Используется для плавного завершения работы шины, когда необходимо дождаться обработки всех полученных сообщений, но при этом не принимать новые сообщения.
+    /// </summary>
+    Task StopReceiving(CancellationToken token = default);
 
-        /// <summary>Выполняет синхронный запрос данных с указанной меткой.</summary>
-        /// <typeparam name="TRequest">Тип данных запроса.</typeparam>
-        /// <typeparam name="TResponse">Тип ожидаемого ответа.</typeparam>
-        /// <param name="label">Метка отправляемого запроса.</param>
-        /// <param name="request">Отправляемое сообщение.</param>
-        /// <param name="options">Настройки отправителя.</param>
-        /// <param name="responseAction">Действие которое нужно выполнить при получении ответного сообщения.</param>
-        new void Request<TRequest, TResponse>(MessageLabel label, TRequest request, RequestOptions options, Action<TResponse> responseAction)
-            where TRequest : class
-            where TResponse : class;
+    /// <summary>
+    /// Дожидается завершения обработки всех полученных сообщений. Используется после вызова <see cref="StopReceiving"/> для плавного завершения работы шины, когда необходимо дождаться обработки всех полученных сообщений, но при этом не принимать новые сообщения.
+    /// </summary>
+    Task WaitForRequestsCompletion(CancellationToken token = default);
 
-        /// <summary>Выполняет асинхронный запрос данных с указанной меткой.</summary>
-        /// <typeparam name="TRequest">Тип данных запроса.</typeparam>
-        /// <typeparam name="TResponse">Тип ожидаемого ответа.</typeparam>
-        /// <param name="label">Метка отправляемого сообщения.</param>
-        /// <param name="request">Отправляемое сообщение.</param>
-        /// <param name="options">Настройки запроса.</param>
-        /// <returns>Задача получения ответного сообщения.</returns>
-        new Task<TResponse> RequestAsync<TRequest, TResponse>(string label, TRequest request, RequestOptions options = null)
-            where TRequest : class
-            where TResponse : class;
+    /// <summary>
+    /// Останавливает отправку сообщений. Используется для плавного завершения работы шины.
+    /// </summary>
+    Task StopProducing(CancellationToken token = default);
 
-        /// <summary>Выполняет асинхронный запрос данных с указанной меткой.</summary>
-        /// <typeparam name="TRequest">Тип данных запроса.</typeparam>
-        /// <typeparam name="TResponse">Тип ожидаемого ответа</typeparam>
-        /// <param name="label">Метка отправляемого сообщения.</param>
-        /// <param name="request">Отправляемое сообщение.</param>
-        /// <param name="options">Настройки отправителя.</param>
-        /// <returns>Задача получения ответного сообщения.</returns>
-        new Task<TResponse> RequestAsync<TRequest, TResponse>(MessageLabel label, TRequest request, RequestOptions options = null)
-            where TRequest : class
-            where TResponse : class;
+    /// <summary>
+    /// Проверяет возможность получения сообщения с указанной меткой.
+    /// </summary>
+    /// <param name="label">Метка сообщения.</param>
+    /// <returns>
+    /// Если <c>true</c> - тогда шина может обрабатывать сообщения с такой меткой, иначе - <c>false</c>.
+    /// </returns>
+    bool CanHandle(string label);
 
-        /// <summary>
-        ///   Остановка шины и освобождение всех ресурсов.
-        /// </summary>
-        void Shutdown();
+    /// <summary>
+    /// Проверяет возможность отправки с использованием указанной метки.
+    /// </summary>
+    /// <param name="label">Метка сообщения.</param>
+    /// <returns>
+    /// Если <c>true</c> - тогда шина может отправлять сообщения с такой меткой, иначе - <c>false</c>.
+    /// </returns>
+    bool CanRoute(string label);
 
-        /// <summary>
-        /// Конфигурирование и запуск клиента шины.
-        /// </summary>
-        /// <returns>Задача cтартующая шину.</returns>
-        Task Start();
+    /// <summary>
+    /// Отправляет сообщение с указанной меткой.
+    /// </summary>
+    /// <remarks>Метка сообщения должна быть зарегистрирована.</remarks>
+    /// <typeparam name="T"><c>.NET</c> тип отправляемого сообщения.
+    /// </typeparam>
+    /// <param name="label">Метка отправляемого сообщения.</param>
+    /// <param name="payload">Отправляемое сообщение.</param>
+    /// <param name="options">Настройки отправителя.</param>
+    /// <returns>
+    /// Задача ожидания отправки.
+    /// </returns>
+    Task<EmitResult> EmitAsync<T>(string label, T payload, PublishingOptions options = null) where T : class;
 
-        /// <summary>
-        /// Предварительное конфигурирование клиента шины без его запуска.
-        /// </summary>
-        /// <returns>Задача конфигурирующая шину.</returns>
-        Task Prepare();
+    /// <summary>Выполняет асинхронный запрос данных с указанной меткой.</summary>
+    /// <typeparam name="TRequest">Тип данных запроса.</typeparam>
+    /// <typeparam name="TResponse">Тип ожидаемого ответа.</typeparam>
+    /// <param name="label">Метка отправляемого сообщения.</param>
+    /// <param name="request">Отправляемое сообщение.</param>
+    /// <param name="options">Настройки запроса.</param>
+    /// <returns>Задача получения ответного сообщения.</returns>
+    Task<RequestResult<TResponse>> RequestAsync<TRequest, TResponse>(string label, TRequest request, RequestOptions options = null) where TRequest : class where TResponse : class;
 
-        /// <summary>
-        ///   Остановка клиента шины.
-        /// </summary>
-        void Stop();
-    }
+    /// <summary>
+    /// Получает label на основе алиаса
+    /// </summary>
+    /// <param name="alias">алиас сообщения</param>
+    /// <returns>label сообщения</returns>
+    MessageLabel Resolve(string alias);
 }

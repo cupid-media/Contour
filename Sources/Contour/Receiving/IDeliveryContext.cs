@@ -1,26 +1,12 @@
-﻿// --------------------------------------------------------------------------------------------------------------------
-// <copyright file="IDeliveryContext.cs" company="">
-//   
-// </copyright>
-// <summary>
-//   The DeliveryContext interface.
-// </summary>
-// --------------------------------------------------------------------------------------------------------------------
+﻿namespace Contour.Receiving;
 
-namespace Contour.Receiving
+/// <summary>
+/// The DeliveryContext interface.
+/// </summary>
+public interface IDeliveryContext
 {
     /// <summary>
-    /// The DeliveryContext interface.
+    /// Gets the delivery.
     /// </summary>
-    public interface IDeliveryContext
-    {
-        #region Public Properties
-
-        /// <summary>
-        /// Gets the delivery.
-        /// </summary>
-        IDelivery Delivery { get; }
-
-        #endregion
-    }
+    IDelivery Delivery { get; }
 }

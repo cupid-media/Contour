@@ -1,457 +1,471 @@
-﻿namespace Contour.Transport.RabbitMQ.Internal
+﻿using RabbitMQ.Client.Events;
+using System;
+using System.Collections.Generic;
+using System.Threading;
+using System.Threading.Tasks;
+using Microsoft.Extensions.Logging;
+using Contour.Helpers;
+using Contour.Receiving;
+using Contour.Transport.RabbitMQ.Configuration;
+using Contour.Transport.RabbitMQ.Topology;
+using RabbitMQ.Client;
+
+namespace Contour.Transport.RabbitMQ.Internal;
+
+internal class RabbitChannel : IAsyncDisposable
 {
-    using System;
-    using System.Collections.Generic;
-    using System.IO;
-    using System.Threading;
-    using Common.Logging;
-    using Helpers;
-    using Receiving;
-    using Topology;
-    using global::RabbitMQ.Client;
+    private readonly IRabbitConnection connection;
+    private readonly RabbitBus bus;
+    private readonly SemaphoreSlim semaphore = new(1, 1);
+    private readonly ILogger logger;
+    private bool isDisposed;
 
     /// <summary>
-    /// The rabbit channel.
+    /// Initializes a new instance of the <see cref="RabbitChannel"/> class.
     /// </summary>
-    internal sealed class RabbitChannel : IChannel
+    /// <param name="connection"></param>
+    /// <param name="channel">A native transport channel</param>
+    /// <param name="bus">A bus context</param>
+    public RabbitChannel(IRabbitConnection connection, IChannel channel, RabbitBus bus)
     {
-        private readonly object sync = new object();
-        private readonly IBusContext busContext;
+        this.connection = connection;
+        Channel = channel;
+        this.bus = bus;
+        this.logger = LogManager.GetLogger($"{GetType().FullName}({this.connection.Id}, {GetHashCode()})");
 
-        private readonly ILog logger;
+        Channel.ChannelShutdownAsync += OnChannelShutdown;
+    }
 
-        /// <summary>
-        /// Initializes a new instance of the <see cref="RabbitChannel"/> class. 
-        /// </summary>
-        /// <param name="connectionId">A connection identifier to which this channel belongs</param>
-        /// <param name="model">A native transport channel</param>
-        /// <param name="busContext">A bus context</param>
-        /// <param name="connectionString">Used connection string</param>
-        /// <param name="connectionKey">Key by connection string</param>
-        public RabbitChannel(Guid connectionId, IModel model, IBusContext busContext, string connectionString, string connectionKey)
+    /// <summary>
+    /// Строка подключения
+    /// </summary>
+    internal string ConnectionString => this.connection.ConnectionString;
+
+    public string ConnectionKey => this.connection.ConnectionKey;
+
+    /// <summary>
+    /// Is fired on channel shutdown.
+    /// </summary>
+    public AsyncEventWrapper<RabbitChannelShutdownEventArgs> Shutdown { get; } = new();
+
+    /// <summary>
+    /// Gets the native.
+    /// </summary>
+    protected IChannel Channel { get; }
+
+    public bool IsOpen => Channel.IsOpen && this.connection.IsOpen;
+
+    /// <summary>
+    /// The accept.
+    /// </summary>
+    /// <param name="delivery">
+    /// The delivery.
+    /// </param>
+    /// <param name="cancellationToken"></param>
+    public async Task Accept(RabbitDelivery delivery, CancellationToken cancellationToken)
+    {
+        this.logger.LogTrace("Accepting message [{Label}] ({DeliveryTag})", delivery.Label, delivery.Args.DeliveryTag);
+
+        await SafeNativeInvoke(n => n.BasicAckAsync(delivery.Args.DeliveryTag, false, cancellationToken).AsTask(), cancellationToken);
+    }
+
+    /// <summary>
+    /// The bind.
+    /// </summary>
+    /// <param name="queue">
+    /// The queue.
+    /// </param>
+    /// <param name="exchange">
+    /// The exchange.
+    /// </param>
+    /// <param name="routingKey">
+    /// The routing key.
+    /// </param>
+    /// <param name="cancellationToken"></param>
+    public async Task Bind(Queue queue, Exchange exchange, string routingKey, CancellationToken cancellationToken)
+    {
+        try
         {
-            this.ConnectionId = connectionId;
-            this.Model = model;
-            this.busContext = busContext;
-            this.ConnectionString = connectionString;
-            this.logger = LogManager.GetLogger($"{this.GetType().FullName}({this.ConnectionId}, {this.GetHashCode()})");
-            this.ConnectionKey = connectionKey;
+            await SafeNativeInvoke(n => n.QueueBindAsync(queue.Name, exchange.Name, routingKey, cancellationToken: cancellationToken), cancellationToken);
+        }
+        catch (Exception e)
+        {
+            this.logger.LogError(e, "Failed to bind queue to exchange [{ExchangeName}:{QueueName}] on channel: {Channel}", exchange.Name, queue.Name, ToString());
+            throw;
+        }
+    }
 
-            this.Model.ModelShutdown += this.OnModelShutdown;
+    public AsyncEventingBasicConsumer BuildConsumer()
+    {
+        return new AsyncEventingBasicConsumer(Channel);
+    }
+
+    /// <summary>
+    /// The declare.
+    /// </summary>
+    /// <param name="exchange">
+    /// The exchange.
+    /// </param>
+    /// <param name="cancellationToken"></param>
+    public async Task Declare(Exchange exchange, CancellationToken cancellationToken)
+    {
+        try
+        {
+            await SafeNativeInvoke(
+                n => n.ExchangeDeclareAsync(exchange.Name, exchange.Type, exchange.Durable, exchange.AutoDelete, exchange.Arguments, cancellationToken: cancellationToken),
+                cancellationToken);
+        }
+        catch (Exception e)
+        {
+            this.logger.LogError(e, "Failed to Declare Exchange [{ExchangeName}] on channel: {Channel}", exchange.Name, ToString());
+            throw;
+        }
+    }
+
+    /// <summary>
+    /// The declare.
+    /// </summary>
+    /// <param name="queue">
+    /// The queue.
+    /// </param>
+    /// <param name="cancellationToken"></param>
+    public async Task Declare(Queue queue, CancellationToken cancellationToken)
+    {
+        try
+        {
+            var arguments = new Dictionary<string, object>();
+            if (queue.Ttl.HasValue)
+            {
+                arguments.Add(Headers.QueueMessageTtl, (long)queue.Ttl.Value.TotalMilliseconds);
+            }
+
+            if (queue.Limit.HasValue)
+            {
+                arguments.Add(Headers.QueueMaxLength, (int)queue.Limit);
+            }
+
+            if (queue.MaxLengthBytes.HasValue)
+            {
+                arguments.Add(Headers.QueueMaxLengthBytes, (int)queue.MaxLengthBytes);
+            }
+
+            await SafeNativeInvoke(n =>
+                    n.QueueDeclareAsync(queue.Name, queue.Durable, queue.Exclusive, queue.AutoDelete, arguments, cancellationToken: cancellationToken),
+                cancellationToken);
+        }
+        catch (Exception e)
+        {
+            this.logger.LogError(e, "Failed to Declare Queue [{QueueName}] on channel: {Channel}", queue.Name, ToString());
+            throw;
+        }
+    }
+
+    /// <summary>
+    /// The declare default queue.
+    /// </summary>
+    /// <returns>
+    /// The <see cref="string"/>.
+    /// </returns>
+    public async Task<string> DeclareDefaultQueue(CancellationToken cancellationToken)
+    {
+        try
+        {
+            var queueName = string.Empty;
+
+            await SafeNativeInvoke(async n =>
+            {
+                var declareResult = await n.QueueDeclareAsync(cancellationToken: cancellationToken);
+                queueName = declareResult.QueueName;
+            }, cancellationToken);
+
+            return queueName;
+        }
+        catch (Exception e)
+        {
+            this.logger.LogError(e, "Failed to Declare Default Queue on channel: {Channel}", ToString());
+            throw;
+        }
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        if (this.isDisposed)
+        {
+            return;
         }
 
-        /// <summary>
-        /// Строка подключения
-        /// </summary>
-        internal string ConnectionString { get; }
-
-        public Guid ConnectionId { get; }
-
-        public string ConnectionKey { get; }
-
-        /// <summary>
-        /// The failed.
-        /// </summary>
-        [Obsolete("Channel failures are no longer propagated outside via events, instead an exception is thrown")]
-        public event Action<IChannel, ErrorEventArgs> Failed = (channel, args) => { };
-
-        /// <summary>
-        /// Is fired on channel shutdown.
-        /// </summary>
-        public event Action<IChannel, ShutdownEventArgs> Shutdown = (channel, args) => { };
-
-        /// <summary>
-        /// Gets the native.
-        /// </summary>
-        protected IModel Model { get; }
-
-        /// <summary>
-        /// Aborts the channel
-        /// </summary>
-        public void Abort()
-        {
-            this.Model?.Abort();
-        }
-
-        /// <summary>
-        /// The accept.
-        /// </summary>
-        /// <param name="delivery">
-        /// The delivery.
-        /// </param>
-        public void Accept(RabbitDelivery delivery)
-        {
-            this.logger.Trace(m => m("Accepting message [{0}] ({1}).", delivery.Label, delivery.Args.DeliveryTag));
-
-            this.SafeNativeInvoke(n => n.BasicAck(delivery.Args.DeliveryTag, false));
-        }
-
-        /// <summary>
-        /// The bind.
-        /// </summary>
-        /// <param name="queue">
-        /// The queue.
-        /// </param>
-        /// <param name="exchange">
-        /// The exchange.
-        /// </param>
-        /// <param name="routingKey">
-        /// The routing key.
-        /// </param>
-        public void Bind(Queue queue, Exchange exchange, string routingKey)
+        this.isDisposed = true;
+        if (Channel != null)
         {
             try
             {
-                this.SafeNativeInvoke(n => n.QueueBind(queue.Name, exchange.Name, routingKey));
-            }
-            catch (Exception e)
-            {
-                this.logger.Error(m => m("Failed to bind queue to exchange [{1}:{2}] on channel: {0}", this.ToString(), exchange.Name, queue.Name), e);
-                throw;
-            }
-        }
-
-        /// <summary>
-        /// The build cancellable consumer.
-        /// </summary>
-        /// <param name="cancellationToken">
-        /// The cancellation token.
-        /// </param>
-        /// <returns>
-        /// The <see cref="CancellableQueueingConsumer"/>.
-        /// </returns>
-        public CancellableQueueingConsumer BuildCancellableConsumer(CancellationToken cancellationToken)
-        {
-            return new CancellableQueueingConsumer(this.Model, cancellationToken);
-        }
-
-        /// <summary>
-        /// The declare.
-        /// </summary>
-        /// <param name="exchange">
-        /// The exchange.
-        /// </param>
-        public void Declare(Exchange exchange)
-        {
-            try
-            {
-                this.SafeNativeInvoke(n => n.ExchangeDeclare(exchange.Name, exchange.Type, exchange.Durable, exchange.AutoDelete, new Dictionary<string, object>()));
-            }
-            catch (Exception e)
-            {
-                this.logger.Error(m => m("Failed to Declare Exchange [{1}] on channel: {0}", this.ToString(), exchange.Name), e);
-                throw;
-            }
-        }
-
-        /// <summary>
-        /// The declare.
-        /// </summary>
-        /// <param name="queue">
-        /// The queue.
-        /// </param>
-        public void Declare(Queue queue)
-        {
-            try
-            {
-                var arguments = new Dictionary<string, object>();
-                if (queue.Ttl.HasValue)
+                if (IsOpen)
                 {
-                    arguments.Add(Contour.Headers.QueueMessageTtl, (long)queue.Ttl.Value.TotalMilliseconds);
+                    await Channel.AbortAsync();
                 }
 
-                if (queue.Limit.HasValue)
-                {
-                    arguments.Add(Contour.Headers.QueueMaxLength, (int)queue.Limit);
-                }
-
-                if (queue.MaxLengthBytes.HasValue)
-                {
-                    arguments.Add(Contour.Headers.QueueMaxLengthBytes, (int)queue.MaxLengthBytes);
-                }
-
-                this.SafeNativeInvoke(n =>
-                    n.QueueDeclare(queue.Name, queue.Durable, queue.Exclusive, queue.AutoDelete, arguments));
+                Channel.ChannelShutdownAsync -= OnChannelShutdown;
+                Channel.Dispose();
             }
-            catch (Exception e)
+            catch (Exception)
             {
-                this.logger.Error(m => m("Failed to Declare Queue [{1}] on channel: {0}", this.ToString(), queue.Name),
-                    e);
-                throw;
+                // Suppress all errors here
             }
         }
 
-        /// <summary>
-        /// The declare default queue.
-        /// </summary>
-        /// <returns>
-        /// The <see cref="string"/>.
-        /// </returns>
-        public string DeclareDefaultQueue()
+        this.semaphore.Dispose();
+        GC.SuppressFinalize(this);
+    }
+
+    /// <summary>
+    /// The on confirmation.
+    /// </summary>
+    /// <param name="handleConfirmation">
+    /// The handle confirmation.
+    /// </param>
+    public async Task OnConfirmation(ConfirmationHandler handleConfirmation, CancellationToken cancellationToken)
+    {
+        await SafeNativeInvoke(
+            n =>
+            {
+                n.BasicAcksAsync += (model, args) => handleConfirmation(true, args.DeliveryTag, args.Multiple);
+                n.BasicNacksAsync += (model, args) => handleConfirmation(false, args.DeliveryTag, args.Multiple);
+                return Task.CompletedTask;
+            },
+            cancellationToken);
+    }
+
+    /// <summary>
+    /// The publish.
+    /// </summary>
+    /// <param name="route">
+    /// The route.
+    /// </param>
+    /// <param name="message">
+    /// The message.
+    /// </param>
+    /// <param name="propsVisitor">
+    /// The props visitor.
+    /// </param>
+    /// <param name="cancellationToken"></param>
+    public async Task Publish<TRequest>(IRoute route,
+        Message<TRequest> message,
+        Func<IBasicProperties, IDictionary<string, object>> propsVisitor,
+        CancellationToken cancellationToken) where TRequest : class
+    {
+        var (nativeRoute, body, props) = PrepareRequest(route, message, propsVisitor);
+
+        await SafeNativeInvoke(
+            n => n.BasicPublishAsync(nativeRoute.Exchange, nativeRoute.RoutingKey, false, props, body, cancellationToken).AsTask(),
+            cancellationToken);
+    }
+
+    public async Task PublishWithConfirmation<TRequest>(IRoute route,
+        Message<TRequest> message,
+        Action<ulong> registerConfirmation,
+        Func<IBasicProperties, IDictionary<string, object>> propsVisitor,
+        CancellationToken cancellationToken) where TRequest : class
+    {
+        var (nativeRoute, body, props) = PrepareRequest(route, message, propsVisitor);
+
+        await SafeNativeInvoke(async n =>
         {
+            var nextSeq = await n.GetNextPublishSequenceNumberAsync(cancellationToken);
+            registerConfirmation(nextSeq);
+            await n.BasicPublishAsync(nativeRoute.Exchange, nativeRoute.RoutingKey, false, props, body, cancellationToken);
+        }, cancellationToken);
+    }
+
+    private (RabbitRoute Route, byte[] Body, BasicProperties Props) PrepareRequest<TRequest>(IRoute route, Message<TRequest> message, Func<IBasicProperties, IDictionary<string, object>> propsVisitor) where TRequest : class
+    {
+        var nativeRoute = (RabbitRoute)route;
+
+        this.logger.LogTrace("Emitting message [{Label}] ({Payload}) through [{Route}]", message.Label, message.Payload, nativeRoute);
+
+        var props = new BasicProperties
+        {
+            ContentType = this.bus.PayloadConverter.ContentType,
+            Timestamp = new AmqpTimestamp(DateTime.UtcNow.ToUnixTimestamp()),
+            Headers = new Dictionary<string, object>()
+        };
+        var body = this.bus.PayloadConverter.FromObject(message.Payload);
+
+        var headers = propsVisitor?.Invoke(props);
+        headers.ForEach(i => props.Headers.Add(i));
+
+        this.bus.MessageLabelHandler.Inject(props, message.Label);
+
+        DiagnosticProps.Store(DiagnosticProps.Names.LastPublishAttemptConnectionString, ConnectionString);
+        return (nativeRoute, body, props);
+    }
+
+    /// <summary>
+    /// The reject.
+    /// </summary>
+    /// <param name="delivery">
+    /// The delivery.
+    /// </param>
+    /// <param name="requeue">
+    /// The requeue.
+    /// </param>
+    /// <param name="cancellationToken"></param>
+    public async Task Reject(RabbitDelivery delivery, bool requeue, CancellationToken cancellationToken)
+    {
+        this.logger.LogTrace("Rejecting message [{Label}] ({DeliveryTag})", delivery.Label, delivery.Args.DeliveryTag);
+
+        await SafeNativeInvoke(n => n.BasicNackAsync(delivery.Args.DeliveryTag, false, requeue, cancellationToken).AsTask(), cancellationToken);
+    }
+
+    /// <summary>
+    /// The reply.
+    /// </summary>
+    /// <param name="message">
+    /// The message.
+    /// </param>
+    /// <param name="replyTo">
+    /// The reply to.
+    /// </param>
+    /// <param name="correlationId">
+    /// The correlation id.
+    /// </param>
+    /// <param name="cancellationToken"></param>
+    public async Task Reply<TReply>(Message<TReply> message, RabbitRoute replyTo, string correlationId, CancellationToken cancellationToken) where TReply : class
+    {
+        Func<IBasicProperties, IDictionary<string, object>> propsVisitor = p =>
+        {
+            p.CorrelationId = correlationId;
+            return message.Headers;
+        };
+
+        await Publish(new RabbitRoute(replyTo.Exchange, replyTo.RoutingKey), message, propsVisitor, cancellationToken);
+    }
+
+    /// <summary>
+    /// The set qos.
+    /// </summary>
+    /// <param name="qos">
+    /// The qos.
+    /// </param>
+    /// <param name="cancellationToken"></param>
+    public async Task SetQos(QoSParams qos, CancellationToken cancellationToken)
+    {
+        try
+        {
+            await SafeNativeInvoke(n => n.BasicQosAsync(qos.PrefetchSize, qos.PrefetchCount, false, cancellationToken: cancellationToken), cancellationToken);
+        }
+        catch (Exception e)
+        {
+            this.logger.LogError(e, "Failed to set Qos on channel: {Channel}", ToString());
+            throw;
+        }
+    }
+
+    /// <summary>
+    /// The start consuming.
+    /// </summary>
+    /// <param name="listeningSource">
+    /// The listening source.
+    /// </param>
+    /// <param name="requireAccept">
+    /// The require accept.
+    /// </param>
+    /// <param name="consumer">
+    /// The consumer.
+    /// </param>
+    /// <param name="cancellationToken"></param>
+    /// <returns>
+    /// The <see cref="string"/>.
+    /// </returns>
+    public async Task<string> StartConsuming(IListeningSource listeningSource, bool requireAccept, IAsyncBasicConsumer consumer, CancellationToken cancellationToken)
+    {
+        try
+        {
+            var consumerTag = string.Empty;
+
+            await SafeNativeInvoke(async n =>
+            {
+                consumerTag = await n.BasicConsumeAsync(listeningSource.Address, !requireAccept, consumer, cancellationToken: cancellationToken);
+            }, cancellationToken);
+
+            return consumerTag;
+        }
+        catch (Exception e)
+        {
+            this.logger.LogError(e, "Failed start consuming on channel");
+            throw;
+        }
+    }
+
+    /// <summary>
+    /// Unsubscribe consumer from queue via <param name="tag"/> subscription ID.
+    /// </summary>
+    /// <param name="tag">Subscription ID</param>
+    /// <param name="cancellationToken"></param>
+    public async Task StopConsuming(string tag, CancellationToken cancellationToken)
+    {
+        if (IsOpen)
+        {
+            await SafeNativeInvoke(m => m.BasicCancelAsync(tag, cancellationToken: cancellationToken), cancellationToken);
+        }
+        else
+        {
+            this.logger.LogTrace("Channel is closed, skipping canceling consumer");
+        }
+    }
+
+    /// <summary>
+    /// The unpack as.
+    /// </summary>
+    /// <param name="delivery">
+    /// The delivery.
+    /// </param>
+    /// <returns>
+    /// The <see cref="IMessage"/>.
+    /// </returns>
+    public Message<T> UnpackAs<T>(RabbitDelivery delivery) where T : class
+    {
+        var payload = this.bus.PayloadConverter.ToObject<T>(delivery.Args.Body.ToArray());
+        return new Message<T>(delivery.Label, payload, delivery.Headers);
+    }
+
+    public override string ToString()
+    {
+        return $"RabbitChannel({this.connection.Id};{Channel?.ChannelNumber})";
+    }
+
+    private async Task OnChannelShutdown(object sender, ShutdownEventArgs args)
+    {
+        this.logger.LogTrace("Channel is closed due to '{ReplyText}'", args.ReplyText);
+        await Shutdown.Invoke(new RabbitChannelShutdownEventArgs(this, args, args.CancellationToken));
+    }
+
+    private async Task SafeNativeInvoke(Func<IChannel, Task> invokeAction, CancellationToken token)
+    {
+        if (!IsOpen)
+        {
+            this.logger.LogWarning("Channel is closed, cannot perform action [{ActionName}]", invokeAction.Method.Name);
+            return;
+        }
+
+        await this.semaphore.ExecuteWithCondition(async () =>
+        {
+            if (!IsOpen)
+            {
+                this.logger.LogWarning("Channel is closed, cannot perform action [{ActionName}]", invokeAction.Method.Name);
+                return 0;
+            }
+
             try
             {
-                var queueName = string.Empty;
-
-                this.SafeNativeInvoke(n => queueName = n.QueueDeclare());
-
-                return queueName;
-            }
-            catch (Exception e)
-            {
-                this.logger.Error(m => m("Failed to Declare Default Queue on channel: {0}", this.ToString()), e);
-                throw;
-            }
-        }
-
-        /// <summary>
-        /// The dispose.
-        /// </summary>
-        public void Dispose()
-        {
-            if (this.Model != null)
-            {
-                this.Model.ModelShutdown -= this.OnModelShutdown;
-
-                try
-                {
-                    this.Model.Abort();
-                    this.Model.Dispose();
-                }
-                catch (Exception)
-                {
-                    // Suppress all errors here
-                }
-            }
-        }
-
-        /// <summary>
-        /// Enable publish confirmation.
-        /// </summary>
-        public void EnablePublishConfirmation()
-        {
-            this.SafeNativeInvoke(n => n.ConfirmSelect());
-        }
-
-        /// <summary>
-        /// Get next seq no.
-        /// </summary>
-        /// <returns>
-        /// The <see cref="ulong"/>.
-        /// </returns>
-        public ulong GetNextSeqNo()
-        {
-            ulong seqNo = 0UL;
-            this.SafeNativeInvoke(n => seqNo = n.NextPublishSeqNo);
-            return seqNo;
-        }
-
-        /// <summary>
-        /// The on confirmation.
-        /// </summary>
-        /// <param name="handleConfirmation">
-        /// The handle confirmation.
-        /// </param>
-        public void OnConfirmation(ConfirmationHandler handleConfirmation)
-        {
-            this.SafeNativeInvoke(
-                n =>
-                    {
-                        n.BasicAcks += (model, args) => handleConfirmation(true, args.DeliveryTag, args.Multiple);
-                        n.BasicNacks += (model, args) => handleConfirmation(false, args.DeliveryTag, args.Multiple);
-                    });
-        }
-
-        /// <summary>
-        /// The publish.
-        /// </summary>
-        /// <param name="route">
-        /// The route.
-        /// </param>
-        /// <param name="message">
-        /// The message.
-        /// </param>
-        /// <param name="propsVisitor">
-        /// The props visitor.
-        /// </param>
-        public void Publish(IRoute route, IMessage message, Func<IBasicProperties, IDictionary<string, object>> propsVisitor = null)
-        {
-            var nativeRoute = (RabbitRoute)route;
-
-            this.logger.Trace(m => m("Emitting message [{0}] ({1}) through [{2}].", message.Label, message.Payload, nativeRoute));
-
-            var props = this.Model.CreateBasicProperties();
-            var body = this.busContext.PayloadConverter.FromObject(message.Payload);
-
-            if (props.Headers == null)
-            {
-                props.Headers = new Dictionary<string, object>();
-            }
-
-            props.ContentType = this.busContext.PayloadConverter.ContentType;
-            props.Timestamp = new AmqpTimestamp(DateTime.UtcNow.ToUnixTimestamp());
-
-            var headers = propsVisitor?.Invoke(props);
-            headers.ForEach(i => props.Headers.Add(i));
-
-            this.busContext.MessageLabelHandler.Inject(props, message.Label);
-
-            DiagnosticProps.Store(DiagnosticProps.Names.LastPublishAttemptConnectionString, this.ConnectionString);
-
-
-            this.SafeNativeInvoke(n => n.BasicPublish(nativeRoute.Exchange, nativeRoute.RoutingKey, false, props, body));
-        }
-
-        /// <summary>
-        /// The reject.
-        /// </summary>
-        /// <param name="delivery">
-        /// The delivery.
-        /// </param>
-        /// <param name="requeue">
-        /// The requeue.
-        /// </param>
-        public void Reject(RabbitDelivery delivery, bool requeue)
-        {
-            this.logger.Trace(m => m("Rejecting message [{0}] ({1}).", delivery.Label, delivery.Args.DeliveryTag));
-
-            this.SafeNativeInvoke(n => n.BasicNack(delivery.Args.DeliveryTag, false, requeue));
-        }
-
-        /// <summary>
-        /// The reply.
-        /// </summary>
-        /// <param name="message">
-        /// The message.
-        /// </param>
-        /// <param name="replyTo">
-        /// The reply to.
-        /// </param>
-        /// <param name="correlationId">
-        /// The correlation id.
-        /// </param>
-        public void Reply(IMessage message, RabbitRoute replyTo, string correlationId)
-        {
-            Func<IBasicProperties, IDictionary<string, object>> propsVisitor = p =>
-            {
-                p.CorrelationId = correlationId;
-                return message.Headers;
-            };
-
-            this.Publish(new RabbitRoute(replyTo.Exchange, replyTo.RoutingKey), message, propsVisitor);
-        }
-
-        /// <summary>
-        /// The set qos.
-        /// </summary>
-        /// <param name="qos">
-        /// The qos.
-        /// </param>
-        public void SetQos(QoSParams qos)
-        {
-            try
-            {
-                this.SafeNativeInvoke(n => n.BasicQos(qos.PrefetchSize, qos.PrefetchCount, false));
-            }
-            catch (Exception e)
-            {
-                this.logger.Error(m => m("Failed to set Qos on channel: {0}", this.ToString()), e);
-                throw;
-            }
-        }
-
-        /// <summary>
-        /// The start consuming.
-        /// </summary>
-        /// <param name="listeningSource">
-        /// The listening source.
-        /// </param>
-        /// <param name="requireAccept">
-        /// The require accept.
-        /// </param>
-        /// <param name="consumer">
-        /// The consumer.
-        /// </param>
-        /// <returns>
-        /// The <see cref="string"/>.
-        /// </returns>
-        public string StartConsuming(IListeningSource listeningSource, bool requireAccept, IBasicConsumer consumer)
-        {
-            try
-            {
-                var consumerTag = string.Empty;
-
-                this.SafeNativeInvoke(n => consumerTag = n.BasicConsume(listeningSource.Address, !requireAccept, consumer));
-
-                return consumerTag;
-            }
-            catch (Exception e)
-            {
-                this.logger.Error(m => m("Failed start consuming on channel."), e);
-                throw;
-            }
-        }
-
-        /// <summary>
-        /// The unpack as.
-        /// </summary>
-        /// <param name="type">
-        /// The type.
-        /// </param>
-        /// <param name="delivery">
-        /// The delivery.
-        /// </param>
-        /// <returns>
-        /// The <see cref="IMessage"/>.
-        /// </returns>
-        public IMessage UnpackAs(Type type, RabbitDelivery delivery)
-        {
-            var payload = this.busContext.PayloadConverter.ToObject(delivery.Args.Body.ToArray(), type);
-            return new Message(delivery.Label, delivery.Headers, payload);
-        }
-
-        private void OnModelShutdown(object sender, ShutdownEventArgs args)
-        {
-            this.logger.Trace($"Channel is closed due to '{args.ReplyText}'");
-            this.Shutdown(this, args);
-        }
-
-        /// <summary>
-        /// The safe native invoke.
-        /// </summary>
-        /// <param name="invokeAction">
-        /// The invoke action.
-        /// </param>
-        private void SafeNativeInvoke(Action<IModel> invokeAction)
-        {
-            try
-            {
-                lock (this.sync)
-                {
-                    this.logger.Trace($"Performing channel action [{invokeAction.Method.Name}]");
-                    invokeAction(this.Model);
-                }
+                this.logger.LogTrace("Performing channel action [{ActionName}]", invokeAction.Method.Name);
+                await invokeAction(Channel);
+                return 0;
             }
             catch (Exception ex)
             {
-                this.logger.Error($"Channel action failed due to {ex.Message}, connection string: [{this.ConnectionString}]", ex);
+                this.logger.LogError(ex, "Channel action failed due to {Message}, connection string: [{ConnectionString}]", ex.Message, ConnectionString);
                 throw;
             }
-        }
-
-        private static string TryGetSanitizedBrokerUrl(string connectionString)
-        {
-            try
-            {
-                var uri = new Uri(connectionString);
-                var hostPort = uri.IsDefaultPort ? uri.Host : $"{uri.Host}:{uri.Port}";
-                var path = uri.AbsolutePath;
-                return $"{uri.Scheme}://{hostPort}{path}";
-            }
-            catch
-            {
-                return null;
-            }
-        }
+        }, logger: this.logger, cancellationToken: token);
     }
 }

@@ -1,35 +1,26 @@
-﻿namespace Contour
+﻿using System;
+
+namespace Contour;
+
+/// <summary>
+/// The message attribute.
+/// </summary>
+[AttributeUsage(AttributeTargets.Class)]
+public class MessageAttribute : Attribute
 {
-    using System;
+    /// <summary>
+    /// The label.
+    /// </summary>
+    public readonly string Label;
 
     /// <summary>
-    /// The message attribute.
+    /// Инициализирует новый экземпляр класса <see cref="MessageAttribute"/>.
     /// </summary>
-    [AttributeUsage(AttributeTargets.Class)]
-    public class MessageAttribute : Attribute
+    /// <param name="label">
+    /// The label.
+    /// </param>
+    public MessageAttribute(string label)
     {
-        #region Fields
-
-        /// <summary>
-        /// The label.
-        /// </summary>
-        public readonly string Label;
-
-        #endregion
-
-        #region Constructors and Destructors
-
-        /// <summary>
-        /// Инициализирует новый экземпляр класса <see cref="MessageAttribute"/>.
-        /// </summary>
-        /// <param name="label">
-        /// The label.
-        /// </param>
-        public MessageAttribute(string label)
-        {
-            this.Label = label;
-        }
-
-        #endregion
+        this.Label = label;
     }
 }

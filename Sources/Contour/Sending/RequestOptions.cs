@@ -1,30 +1,14 @@
-﻿// --------------------------------------------------------------------------------------------------------------------
-// <copyright file="RequestOptions.cs" company="">
-//   
-// </copyright>
-// <summary>
-//   The request options.
-// </summary>
-// --------------------------------------------------------------------------------------------------------------------
+﻿using System;
 
-namespace Contour.Sending
+namespace Contour.Sending;
+
+/// <summary>
+/// The request options.
+/// </summary>
+public class RequestOptions : PublishingOptions
 {
-    using System;
-
-    using Contour.Helpers;
-
     /// <summary>
-    /// The request options.
+    /// Gets or sets the timeout.
     /// </summary>
-    public class RequestOptions : PublishingOptions
-    {
-        #region Public Properties
-
-        /// <summary>
-        /// Gets or sets the timeout.
-        /// </summary>
-        public Maybe<TimeSpan?> Timeout { get; set; }
-
-        #endregion
-    }
+    public TimeSpan? Timeout { get; set; }
 }

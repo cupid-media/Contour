@@ -1,80 +1,46 @@
 ﻿using System.Threading.Tasks;
 
-namespace Contour.Receiving.Consumers
+namespace Contour.Receiving.Consumers;
+
+using System;
+
+/// <summary>
+/// The factory consumer of.
+/// </summary>
+/// <typeparam name="T">
+/// </typeparam>
+public class FactoryConsumerOf<T> : IConsumerOf<T>
+    where T : class
 {
-    using System;
+    /// <summary>
+    /// The _handler resolver.
+    /// </summary>
+    private readonly Func<IConsumer<T>> _handlerResolver;
 
     /// <summary>
-    /// The factory consumer of.
+    /// Инициализирует новый экземпляр класса <see cref="FactoryConsumerOf{T}"/>.
     /// </summary>
-    /// <typeparam name="T">
-    /// </typeparam>
-    public class FactoryConsumerOf<T> : IAsyncConsumerOf<T>, IConsumerOf<T>
-        where T : class
+    /// <param name="handlerResolver">
+    /// The handler resolver.
+    /// </param>
+    public FactoryConsumerOf(Func<IConsumer<T>> handlerResolver)
     {
-        #region Fields
+        this._handlerResolver = handlerResolver;
+    }
 
-        /// <summary>
-        /// The _handler resolver.
-        /// </summary>
-        private readonly Func<IConsumer<T>> _handlerResolver;
+    /// <summary>
+    /// Инициализирует новый экземпляр класса <see cref="FactoryConsumerOf{T}"/>.
+    /// </summary>
+    /// <param name="handlerResolver">
+    /// The handler resolver.
+    /// </param>
+    public FactoryConsumerOf(Func<object> handlerResolver)
+    {
+        this._handlerResolver = () => (IConsumer<T>)handlerResolver();
+    }
 
-        #endregion
-
-        #region Constructors and Destructors
-
-        /// <summary>
-        /// Инициализирует новый экземпляр класса <see cref="FactoryConsumerOf{T}"/>.
-        /// </summary>
-        /// <param name="handlerResolver">
-        /// The handler resolver.
-        /// </param>
-        public FactoryConsumerOf(Func<IConsumer<T>> handlerResolver)
-        {
-            this._handlerResolver = handlerResolver;
-        }
-
-        /// <summary>
-        /// Инициализирует новый экземпляр класса <see cref="FactoryConsumerOf{T}"/>.
-        /// </summary>
-        /// <param name="handlerResolver">
-        /// The handler resolver.
-        /// </param>
-        public FactoryConsumerOf(Func<object> handlerResolver)
-        {
-            this._handlerResolver = () => (IConsumer<T>)handlerResolver();
-        }
-
-        #endregion
-
-        #region Public Methods and Operators
-
-        /// <summary>
-        /// The handle.
-        /// </summary>
-        /// <param name="context">
-        /// The context.
-        /// </param>
-        public void Handle(IConsumingContext<T> context)
-        {
-            ((IConsumerOf<T>)this._handlerResolver()).
-                Handle(context);
-        }
-
-
-        // TODO этот код не работает, но и не используется, исправить при случае
-        public async Task HandleAsync(IConsumingContext<T> context)
-        {
-            if (this._handlerResolver() is IAsyncConsumerOf<T> of)
-            {
-                await of.HandleAsync(context);
-            }
-            else
-            {
-                throw new Exception($"It is not async consumer. Type: {this._handlerResolver.GetType()}");
-            }
-        }
-
-        #endregion
+    public Task HandleAsync(IConsumingContext<T> context)
+    {
+        return ((IConsumerOf<T>)this._handlerResolver()).HandleAsync(context);
     }
 }
