@@ -1,8 +1,10 @@
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using Contour.Receiving;
+using Contour.Tracing;
 using FluentAssertions;
 using Moq;
 using NUnit.Framework;
@@ -89,7 +91,7 @@ public class TracingReplySpecs
     }
 
     [Test]
-    public async Task Should_fallback_to_original_when_trace_parent_parsing_fails()
+    public async Task Should_drop_invalid_trace_parent_when_trace_parent_parsing_fails()
     {
         // Arrange
         var invalidTraceParent = "invalid-trace-parent-format";
@@ -103,10 +105,72 @@ public class TracingReplySpecs
 
         // Assert
         replyMessage.Should().NotBeNull();
-        replyMessage.Headers.Should().ContainKey(Headers.TraceParent);
+        replyMessage.Headers.Should().NotContainKey(Headers.TraceParent);
+    }
 
-        var replyTraceParent = replyMessage.Headers[Headers.TraceParent].ToString();
-        replyTraceParent.Should().Be(invalidTraceParent);
+    [Test]
+    public void Should_generate_new_span_id_from_copied_outgoing_trace_context()
+    {
+        var originalTraceId = "12345678901234567890123456789012";
+        var originalSpanId = "1234567890123456";
+        var originalTraceFlags = (byte)0x01;
+        var originalTraceParent = $"00-{originalTraceId}-{originalSpanId}-{originalTraceFlags:x2}";
+        var originalTraceState = "rojo=00f067aa0ba902b7";
+
+        var outgoingHeaders = new Dictionary<string, object>
+        {
+            [Headers.TraceParent] = Encoding.UTF8.GetBytes(originalTraceParent),
+            [Headers.TraceState] = Encoding.UTF8.GetBytes(originalTraceState)
+        };
+
+        W3CTraceContextProvider.InjectTraceContext(outgoingHeaders, null);
+
+        var traceParent = outgoingHeaders[Headers.TraceParent].ToString();
+        var parts = traceParent.Split('-');
+
+        parts.Should().HaveCount(4);
+        parts[1].Should().Be(originalTraceId);
+        parts[2].Should().NotBe(originalSpanId);
+        parts[2].Should().HaveLength(16);
+        parts[3].Should().Be(originalTraceFlags.ToString("x2"));
+        outgoingHeaders[Headers.TraceState].Should().Be(originalTraceState);
+    }
+
+    [Test]
+    public void Should_not_create_root_trace_context_for_standalone_outgoing_message()
+    {
+        var outgoingHeaders = new Dictionary<string, object>();
+
+        W3CTraceContextProvider.InjectTraceContext(outgoingHeaders, null);
+
+        outgoingHeaders.Should().NotContainKey(Headers.TraceParent);
+        outgoingHeaders.Should().NotContainKey(Headers.TraceState);
+    }
+
+    [Test]
+    public void Should_prefer_current_activity_over_copied_outgoing_trace_context()
+    {
+        var copiedTraceParent = "00-12345678901234567890123456789012-1234567890123456-01";
+        var outgoingHeaders = new Dictionary<string, object>
+        {
+            [Headers.TraceParent] = copiedTraceParent
+        };
+
+        var activity = new Activity("test");
+        activity.SetIdFormat(ActivityIdFormat.W3C);
+        activity.Start();
+
+        try
+        {
+            W3CTraceContextProvider.InjectTraceContext(outgoingHeaders, null);
+
+            outgoingHeaders[Headers.TraceParent].Should().Be(
+                $"00-{activity.TraceId}-{activity.SpanId}-{(byte)activity.ActivityTraceFlags:x2}");
+        }
+        finally
+        {
+            activity.Stop();
+        }
     }
 
     /// <summary>

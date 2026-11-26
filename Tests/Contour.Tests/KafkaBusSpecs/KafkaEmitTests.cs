@@ -1,4 +1,5 @@
 using System;
+using System.Diagnostics;
 using System.Linq;
 using System.Threading.Tasks;
 using Confluent.Kafka;
@@ -95,6 +96,49 @@ public class KafkaEmitTests
 
         headers["x-tenant"].Should().Be("acme");
         headers[Headers.Ttl].Should().Be("00:00:30", "TimeSpan is encoded with the invariant culture");
+
+        await bus.Stop();
+    }
+
+    [Test]
+    public async Task Emit_carries_the_trace_context_of_the_current_activity()
+    {
+        var bus = await CreateBus();
+        await bus.Start();
+
+        var activity = new Activity("emit");
+        activity.SetIdFormat(ActivityIdFormat.W3C);
+        activity.Start();
+
+        try
+        {
+            await bus.EmitAsync(Topic, "payload");
+        }
+        finally
+        {
+            activity.Stop();
+        }
+
+        var headers = Producer.Produced.Single().Headers;
+
+        headers[Headers.TraceParent].Should().Be(
+            $"00-{activity.TraceId}-{activity.SpanId}-{(byte)activity.ActivityTraceFlags:x2}");
+
+        await bus.Stop();
+    }
+
+    [Test]
+    public async Task Emit_outside_of_a_trace_sends_no_trace_context()
+    {
+        var bus = await CreateBus();
+        await bus.Start();
+
+        await bus.EmitAsync(Topic, "payload");
+
+        var headers = Producer.Produced.Single().Headers;
+
+        headers.Should().NotContainKey(Headers.TraceParent);
+        headers.Should().NotContainKey(Headers.TraceState);
 
         await bus.Stop();
     }
