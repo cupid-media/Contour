@@ -3,6 +3,7 @@ using System.Linq;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
 using Contour.Configuration;
+using Contour.Helpers;
 using Contour.Receiving;
 using Contour.Sending;
 using Contour.Transport.RabbitMQ.Configuration;
@@ -43,8 +44,8 @@ internal class RabbitBus : AbstractBus<RabbitBusConfiguration>
             """,
             GetType().Name,
             Endpoint,
-            string.Join("\r\n\t", senderConfigurations.Select(s => $"[{s.Label}]\t=>\t{s.ConnectionString}")),
-            string.Join("\r\n\t", receiverConfigurations.Select(r => $"[{r.Label}]\t=>\t{r.ConnectionString}")));
+            string.Join("\r\n\t", senderConfigurations.Select(s => $"[{s.Label}]\t=>\t{ConnectionStringHelper.Sanitize(s.ConnectionString)}")),
+            string.Join("\r\n\t", receiverConfigurations.Select(r => $"[{r.Label}]\t=>\t{ConnectionStringHelper.Sanitize(r.ConnectionString)}")));
 
         foreach (var sender in senderConfigurations)
         {
@@ -73,7 +74,7 @@ internal class RabbitBus : AbstractBus<RabbitBusConfiguration>
 
         if (multipleReceiversOnSameQueue.Any())
         {
-            var labelsOnQueue = multipleReceiversOnSameQueue.Select(s => $"{s.Key.BrokerUrl}-{s.Key.Address} - [{string.Join(",", s)}]");
+            var labelsOnQueue = multipleReceiversOnSameQueue.Select(s => $"{ConnectionStringHelper.Sanitize(s.Key.BrokerUrl)}-{s.Key.Address} - [{string.Join(",", s)}]");
 
             throw new BusConfigurationException($"Multiple receivers are configured on same queue: {string.Join(", ", labelsOnQueue)}");
         }
@@ -93,7 +94,7 @@ internal class RabbitBus : AbstractBus<RabbitBusConfiguration>
     /// </returns>
     public RabbitReceiver RegisterReceiver(RabbitReceiverOptions configuration, bool isCallback = false)
     {
-        Logger.LogTrace("Registering a new receiver of [{Label}] with connection string [{ConnectionString}]", configuration.Label, configuration.ConnectionString);
+        Logger.LogTrace("Registering a new receiver of [{Label}] with connection string [{ConnectionString}]", configuration.Label, ConnectionStringHelper.Sanitize(configuration.ConnectionString));
 
         var receiver = new RabbitReceiver(this, configuration, this.connectionPool);
         if (!isCallback)
@@ -101,7 +102,7 @@ internal class RabbitBus : AbstractBus<RabbitBusConfiguration>
             ComponentTracker.Register(receiver);
         }
 
-        Logger.LogTrace("A receiver of [{Label}] with connection string [{ConnectionString}] registered successfully", configuration.Label, configuration.ConnectionString);
+        Logger.LogTrace("A receiver of [{Label}] with connection string [{ConnectionString}] registered successfully", configuration.Label, ConnectionStringHelper.Sanitize(configuration.ConnectionString));
         return receiver;
     }
 
@@ -116,11 +117,11 @@ internal class RabbitBus : AbstractBus<RabbitBusConfiguration>
     /// </returns>
     private void RegisterSender(RabbitSenderOptions configuration)
     {
-        Logger.LogTrace("Registering a new sender of [{Label}] with connection string [{ConnectionString}]", configuration.Label, configuration.ConnectionString);
+        Logger.LogTrace("Registering a new sender of [{Label}] with connection string [{ConnectionString}]", configuration.Label, ConnectionStringHelper.Sanitize(configuration.ConnectionString));
 
         var sender = new RabbitSender(this, configuration, this.connectionPool);
         ComponentTracker.Register(sender);
 
-        Logger.LogTrace("A sender of [{Label}] with connection string [{ConnectionString}] registered successfully", configuration.Label, configuration.ConnectionString);
+        Logger.LogTrace("A sender of [{Label}] with connection string [{ConnectionString}] registered successfully", configuration.Label, ConnectionStringHelper.Sanitize(configuration.ConnectionString));
     }
 }

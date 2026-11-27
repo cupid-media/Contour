@@ -1,4 +1,5 @@
-﻿using Microsoft.Extensions.Logging;
+﻿using Contour.Helpers;
+using Microsoft.Extensions.Logging;
 
 namespace Contour.Transport.RabbitMQ.Internal;
 
@@ -16,7 +17,7 @@ internal class RabbitConnectionProvider : IConnectionProvider<IRabbitConnection>
 
     public IRabbitConnection Create(string connectionString)
     {
-        this.logger.LogTrace("Creating a new connection for endpoint [{Endpoint}] at [{ConnectionString}]", this.endpoint, connectionString);
+        this.logger.LogTrace("Creating a new connection for endpoint [{Endpoint}] at [{ConnectionString}]", this.endpoint, ConnectionStringHelper.Sanitize(connectionString));
         return new RabbitConnection(this.endpoint, connectionString, this.bus);
     }
 }

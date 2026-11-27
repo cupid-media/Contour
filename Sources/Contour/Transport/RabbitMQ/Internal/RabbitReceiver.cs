@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
+using Contour.Helpers;
 using Contour.Receiving;
 using Contour.Transport.RabbitMQ.Configuration;
 using Microsoft.Extensions.Logging;
@@ -33,7 +34,7 @@ internal class RabbitReceiver(RabbitBus bus, RabbitReceiverOptions receiverOptio
                              	{Sources}
                              """,
             Configuration.Label,
-            string.Join("\r\n\t", connectionString.Select(url => $"{nameof(RabbitReceivingSource)}({Configuration.Label}): URL\t=>\t{url}")));
+            string.Join("\r\n\t", connectionString.Select(url => $"{nameof(RabbitReceivingSource)}({Configuration.Label}): URL\t=>\t{ConnectionStringHelper.Sanitize(url)}")));
 
         foreach (var url in connectionString)
         {

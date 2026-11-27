@@ -463,7 +463,7 @@ internal class RabbitChannel : IAsyncDisposable
             }
             catch (Exception ex)
             {
-                this.logger.LogError(ex, "Channel action failed due to {Message}, connection string: [{ConnectionString}]", ex.Message, ConnectionString);
+                this.logger.LogError(ex, "Channel action failed due to {Message}, connection string: [{ConnectionString}]", ex.Message, ConnectionStringHelper.Sanitize(ConnectionString));
                 throw;
             }
         }, logger: this.logger, cancellationToken: token);

@@ -48,7 +48,7 @@ internal sealed class RabbitProducer : IProducer
         Label = senderOptions.Label;
         SenderOptions = senderOptions;
 
-        this.logger = LogManager.GetLogger($"{GetType().FullName}({BrokerUrl}, {Label}, {Id})");
+        this.logger = LogManager.GetLogger($"{GetType().FullName}({ConnectionStringHelper.Sanitize(BrokerUrl)}, {Label}, {Id})");
     }
 
     public Guid Id { get; }
@@ -262,7 +262,7 @@ internal sealed class RabbitProducer : IProducer
 
     private async Task BuildRouteResolver(CancellationToken token)
     {
-        this.logger.LogTrace("Using connection [{ConnectionId}] at URL=[{BrokerUrl}] to resolve a producer", this.currentConnection.Id, BrokerUrl);
+        this.logger.LogTrace("Using connection [{ConnectionId}] at URL=[{BrokerUrl}] to resolve a producer", this.currentConnection.Id, ConnectionStringHelper.Sanitize(BrokerUrl));
 
         using var topologyBuilder = new RabbitTopologyBuilder(this.currentConnection);
         var builder = new RabbitRouteResolverBuilderParams

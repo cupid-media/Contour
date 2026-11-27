@@ -87,7 +87,7 @@ internal class RabbitConnection : IRabbitConnection
             return;
         }
 
-        this.logger.LogInformation("Connecting to RabbitMQ using [{ConnectionString}]", ConnectionString);
+        this.logger.LogInformation("Connecting to RabbitMQ using [{ConnectionString}]", ConnectionStringHelper.Sanitize(ConnectionString));
 
         var retryCount = 0;
         while (true)
@@ -116,7 +116,7 @@ internal class RabbitConnection : IRabbitConnection
 
                 var secondsToRetry = Math.Min(10, retryCount);
 
-                this.logger.LogWarning(ex, "Unable to connect to RabbitMQ on connection string: [{ConnectionString}]. Retrying in {SecondsToRetry} seconds...", ConnectionString, secondsToRetry);
+                this.logger.LogWarning(ex, "Unable to connect to RabbitMQ on connection string: [{ConnectionString}]. Retrying in {SecondsToRetry} seconds...", ConnectionStringHelper.Sanitize(ConnectionString), secondsToRetry);
 
                 await Task.Delay(TimeSpan.FromSeconds(secondsToRetry), cancellationToken: token);
                 retryCount++;
@@ -248,7 +248,7 @@ internal class RabbitConnection : IRabbitConnection
 
     public override string ToString()
     {
-        return $"{Id} : {ConnectionString} : {ConnectionKey}";
+        return $"{Id} : {ConnectionStringHelper.Sanitize(ConnectionString)} : {ConnectionKey}";
     }
 
     private Task OnConnectionShutdown(object sender, ShutdownEventArgs shutdownEventArgs)
@@ -287,7 +287,7 @@ internal class RabbitConnection : IRabbitConnection
             }
             catch (Exception ex)
             {
-                this.logger.LogError(ex, "Failed to open a new channel on connection string: [{ConnectionString}] due to: {Message}; retrying...", ConnectionString, ex.Message);
+                this.logger.LogError(ex, "Failed to open a new channel on connection string: [{ConnectionString}] due to: {Message}; retrying...", ConnectionStringHelper.Sanitize(ConnectionString), ex.Message);
             }
         }
     }

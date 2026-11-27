@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
+using Contour.Helpers;
 using Contour.Sending;
 using Contour.Transport.RabbitMQ.Configuration;
 using Microsoft.Extensions.Logging;
@@ -91,7 +92,7 @@ internal class RabbitSender : AbstractSender<RabbitSenderOptions, RabbitBus, Rab
     protected override async Task PrepareProducers(CancellationToken token)
     {
         var connectionsString = new RabbitConnectionString(Configuration.ConnectionString);
-        this.Logger.LogTrace("Building producers of [{Label}]:\r\n\t{Producers}", Configuration.Label, string.Join("\r\n\t", connectionsString.Select(url => $"Producer({Configuration.Label}): URL\t=>\t{url}")));
+        this.Logger.LogTrace("Building producers of [{Label}]:\r\n\t{Producers}", Configuration.Label, string.Join("\r\n\t", connectionsString.Select(url => $"Producer({Configuration.Label}): URL\t=>\t{ConnectionStringHelper.Sanitize(url)}")));
 
         foreach (var url in connectionsString)
         {
@@ -107,17 +108,17 @@ internal class RabbitSender : AbstractSender<RabbitSenderOptions, RabbitBus, Rab
 
     private RabbitProducer BuildProducer(string url)
     {
-        this.Logger.LogTrace("Enlisting a new producer of [{Label}] at URL=[{Url}]...", Configuration.Label, url);
+        this.Logger.LogTrace("Enlisting a new producer of [{Label}] at URL=[{Url}]...", Configuration.Label, ConnectionStringHelper.Sanitize(url));
         var producer = new RabbitProducer(Bus, url, this.connectionPool, Configuration);
 
         if (Configuration.RequiresCallback)
         {
             producer.WithCallback();
-            this.Logger.LogTrace("A producer of [{Label}] at URL=[{BrokerUrl}] has registered a callback listener successfully", producer.Label, producer.BrokerUrl);
+            this.Logger.LogTrace("A producer of [{Label}] at URL=[{BrokerUrl}] has registered a callback listener successfully", producer.Label, ConnectionStringHelper.Sanitize(producer.BrokerUrl));
         }
 
         this.producers.TryAdd(producer.Id, producer);
-        this.Logger.LogTrace("A producer of [{Label}] at URL=[{BrokerUrl}] has been enlisted", producer.Label, producer.BrokerUrl);
+        this.Logger.LogTrace("A producer of [{Label}] at URL=[{BrokerUrl}] has been enlisted", producer.Label, ConnectionStringHelper.Sanitize(producer.BrokerUrl));
 
         return producer;
     }

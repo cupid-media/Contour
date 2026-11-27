@@ -58,7 +58,7 @@ internal sealed class RabbitReceivingSource : IReceivingSource
         this.receivingTokenSource = new CancellationTokenSource();
         this.receivingToken = this.receivingTokenSource.Token;
 
-        this.logger = LogManager.GetLogger($"{GetType().FullName}({BrokerUrl}, {ReceiverOptions.Label}, {Id})");
+        this.logger = LogManager.GetLogger($"{GetType().FullName}({ConnectionStringHelper.Sanitize(BrokerUrl)}, {ReceiverOptions.Label}, {Id})");
     }
 
     public Guid Id { get; }
@@ -315,7 +315,7 @@ internal sealed class RabbitReceivingSource : IReceivingSource
     private async Task BuildEndpoint(CancellationToken cancellationToken)
     {
         var connection = await this.connectionPool.Get(BrokerUrl, ReceiverOptions.ReuseConnection, cancellationToken);
-        this.logger.LogTrace("Using connection [{ConnectionId}] at URL=[{BrokerUrl}] to resolve a ReceivingSource", connection.Id, BrokerUrl);
+        this.logger.LogTrace("Using connection [{ConnectionId}] at URL=[{BrokerUrl}] to resolve a ReceivingSource", connection.Id, ConnectionStringHelper.Sanitize(BrokerUrl));
 
         using var topologyBuilder = new RabbitTopologyBuilder(connection);
         var endpointBuilder = ReceiverOptions.EndpointBuilder;
@@ -568,7 +568,7 @@ internal sealed class RabbitReceivingSource : IReceivingSource
     /// </param>
     private async Task OnUnhandled(RabbitDelivery delivery)
     {
-        this.logger.LogWarning("No handler for message labeled [{Label}] on queue [{ListeningSource}]. On connection string: [{BrokerUrl}]", delivery.Label, ListeningSource, BrokerUrl);
+        this.logger.LogWarning("No handler for message labeled [{Label}] on queue [{ListeningSource}]. On connection string: [{BrokerUrl}]", delivery.Label, ListeningSource, ConnectionStringHelper.Sanitize(BrokerUrl));
 
         if (ReceiverOptions.UnhandledDeliveryStrategy != null)
         {

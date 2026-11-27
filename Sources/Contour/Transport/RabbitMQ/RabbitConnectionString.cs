@@ -2,6 +2,7 @@
 using System.Collections;
 using System.Collections.Generic;
 using System.Linq;
+using Contour.Helpers;
 using Microsoft.Extensions.Logging;
 
 namespace Contour.Transport.RabbitMQ;
@@ -42,7 +43,7 @@ public class RabbitConnectionString : IEnumerable<string>
             throw new ArgumentException("The provided connection string does not contain any URLs");
         }
 
-        this.logger.LogTrace("Connection string [{ConnectionString}] has been split into: {Urls}", connectionString, string.Join("; ", this.urls));
+        this.logger.LogTrace("Connection string [{ConnectionString}] has been split into: {Urls}", ConnectionStringHelper.Sanitize(connectionString), string.Join("; ", this.urls.Select(ConnectionStringHelper.Sanitize)));
     }
 
     /// <summary>
