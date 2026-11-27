@@ -50,7 +50,11 @@ public class When_response_processed_sync : RabbitIntegrationTestBase
             await this.helperBus.EmitAsync(this.testIncomingQueueName, new DummyMessage());
         }
 
-        await Task.Delay(100);
+        // Handlers running one after another would count the fifth message only after 4 seconds,
+        // so 3 seconds still tell them from parallel ones and leave room for a slow CI runner.
+        await WaitForCondition(
+            () => Task.FromResult(Volatile.Read(ref this.receivedCount) == 5),
+            TimeSpan.FromSeconds(3));
     }
 
     [Test]
